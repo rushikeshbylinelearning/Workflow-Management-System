@@ -1,0 +1,253 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Prevent body-level scrolling — only internal content panels scroll */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Export dropdown portal animation */
+/* Assignee Active Tasks — admin-returned rework escalation */
+.task-card--rework-yellow {
+  background: #fff8db;
+  border-left: 6px solid #f4b400;
+}
+
+.task-card--rework-orange {
+  background: #fff1e6;
+  border-left: 6px solid #f57c00;
+}
+
+.task-card--rework-red {
+  background: #fdecec;
+  border-left: 6px solid #d93025;
+}
+
+.task-card--on-hold {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  opacity: 0.75;
+  filter: grayscale(0.35);
+}
+
+.task-card--on-hold h4,
+.task-card--on-hold .text-gray-600,
+.task-card--on-hold .text-gray-900 {
+  color: #6b7280 !important;
+}
+
+/* Admin task table — same rework escalation palette as assignee cards */
+.task-row--rework-yellow {
+  background: #fff8db !important;
+  box-shadow: inset 6px 0 0 #f4b400;
+}
+
+.task-row--rework-orange {
+  background: #fff1e6 !important;
+  box-shadow: inset 6px 0 0 #f57c00;
+}
+
+.task-row--rework-red {
+  background: #fdecec !important;
+  box-shadow: inset 6px 0 0 #d93025;
+}
+
+.rework-returned-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+  line-height: 1.15;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.rework-returned-badge--yellow {
+  background: #fff8db;
+  color: #7a5c00;
+  border-color: #f4b400;
+}
+
+.rework-returned-badge--orange {
+  background: #fff1e6;
+  color: #9a4500;
+  border-color: #f57c00;
+}
+
+.rework-returned-badge--red {
+  background: #fdecec;
+  color: #8b1a12;
+  border-color: #d93025;
+}
+
+.rework-returned-badge__round {
+  font-size: 9px;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+/* Task list table — compact columns with fixed progress/actions width */
+.task-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.task-table__cell-clip {
+  overflow: hidden;
+  min-width: 0;
+}
+
+.task-table__text-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.task-table__text-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-width: 0;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.task-table__progress-cell {
+  width: 96px;
+  max-width: 96px;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  vertical-align: top;
+}
+
+.task-table__progress-cell--admin {
+  width: 148px;
+  max-width: 148px;
+}
+
+.task-table__progress-inner {
+  width: 72px;
+}
+
+.task-table__progress-inner--admin {
+  width: 132px;
+}
+
+.task-table__progress-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.25rem;
+}
+
+.task-table__progress-bar-track {
+  flex: 1;
+  min-width: 0;
+  height: 0.375rem;
+  border-radius: 9999px;
+  background-color: #e5e7eb;
+}
+
+.task-table__progress-bar-fill {
+  height: 0.375rem;
+  border-radius: 9999px;
+  background-color: #2563eb;
+}
+
+.task-table__action-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  width: 72px;
+  min-height: 1.75rem;
+}
+
+.task-table__action-buttons--admin {
+  display: grid;
+  grid-template-columns: repeat(5, 1.75rem);
+  width: 8.75rem;
+}
+
+.task-table__action-buttons .task-table__action-btn {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-table__action-slot {
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+}
+
+.task-table thead .task-table__progress-cell {
+  background-color: #f9fafb;
+}
+
+.task-table tbody tr:hover .task-table__progress-cell {
+  background-color: #f9fafb;
+}
+
+.task-table tbody tr.bg-yellow-50 .task-table__progress-cell {
+  background-color: #fefce8;
+}
+
+.task-table tbody tr.bg-red-50 .task-table__progress-cell {
+  background-color: #fef2f2;
+}
+
+.task-table tbody tr.task-row--rework-yellow .task-table__progress-cell {
+  background-color: #fff8db;
+}
+
+.task-table tbody tr.task-row--rework-orange .task-table__progress-cell {
+  background-color: #fff1e6;
+}
+
+.task-table tbody tr.task-row--rework-red .task-table__progress-cell {
+  background-color: #fdecec;
+}
+
+.task-table tbody tr.bg-yellow-50:hover .task-table__progress-cell,
+.task-table tbody tr.task-row--rework-yellow:hover .task-table__progress-cell {
+  background-color: #fef9c3;
+}
+
+.task-table tbody tr.bg-red-50:hover .task-table__progress-cell,
+.task-table tbody tr.task-row--rework-red:hover .task-table__progress-cell {
+  background-color: #fee2e2;
+}
+
+.task-table tbody tr.task-row--rework-orange:hover .task-table__progress-cell {
+  background-color: #ffedd5;
+}
+
+@keyframes exportDropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

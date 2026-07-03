@@ -1,0 +1,463 @@
+import type { Project, User, Task } from '../types';
+
+export const sampleUsers: User[] = [
+  {
+    id: '1',
+    name: 'Sarah Johnson',
+    email: 'sarah.johnson@company.com',
+    skills: ['Instructional Designers', 'Content Writers'],
+    passcode: 'DEMO123',
+    isActive: true,
+    performanceFlags: [
+      {
+        id: '1',
+        type: 'green',
+        reason: 'Completed project ahead of schedule',
+        date: '2024-01-15',
+        addedBy: 'Manager'
+      }
+    ]
+  },
+  {
+    id: '2',
+    name: 'Mike Chen',
+    email: 'mike.chen@company.com',
+    skills: ['Developers', 'Tech'],
+    passcode: 'TECH456',
+    isActive: true,
+    performanceFlags: []
+  },
+  {
+    id: '3',
+    name: 'Emily Rodriguez',
+    email: 'emily.rodriguez@company.com',
+    skills: ['Graphic Designers', 'Animators'],
+  },
+  {
+    id: '4',
+    name: 'David Kim',
+    email: 'david.kim@company.com',
+    skills: ['QA', 'Tech'],
+  },
+  {
+    id: '5',
+    name: 'Lisa Thompson',
+    email: 'lisa.thompson@company.com',
+    skills: ['Marketing', 'Sales'],
+  },
+  {
+    id: '6',
+    name: 'John Smith',
+    email: 'john.smith@company.com',
+    skills: ['Content Writers', 'Instructional Designers'],
+  },
+];
+
+export const sampleProjects: Project[] = [
+  {
+    id: '1',
+    name: 'Pre-K Curriculum Development',
+    description: 'Comprehensive curriculum design for Pre-K students including KG-1, KG-2, and KG-3 levels',
+    category: 'Curriculum Design',
+    status: 'active',
+    startDate: new Date('2024-01-15'),
+    endDate: new Date('2024-06-30'),
+    progress: 65,
+    stages: [
+      {
+        id: 'stage-1',
+        name: 'Curriculum Analysis',
+        description: 'Analyze curriculum requirements and standards',
+        order: 1,
+        weight: 20, // 20% of project
+        status: 'completed',
+        progress: 100,
+        startDate: new Date('2024-01-15'),
+        endDate: new Date('2024-02-01'),
+        reviewRounds: [],
+        tasks: [],
+      },
+      {
+        id: 'stage-2',
+        name: 'Content Creation',
+        description: 'Develop curriculum content and materials',
+        order: 2,
+        weight: 60, // 60% of project
+        status: 'in-progress',
+        progress: 65,
+        startDate: new Date('2024-02-01'),
+        endDate: new Date('2024-04-30'),
+        reviewRounds: [],
+        tasks: [],
+      },
+      {
+        id: 'stage-3',
+        name: 'Review & Finalization',
+        description: 'Review and finalize curriculum materials',
+        order: 3,
+        weight: 20, // 20% of project
+        status: 'not-started',
+        progress: 0,
+        startDate: new Date('2024-05-01'),
+        endDate: new Date('2024-06-30'),
+        reviewRounds: [],
+        tasks: [],
+      },
+    ],
+    teamMembers: ['1', '3', '6'],
+    grades: [
+      {
+        id: 'kg1',
+        name: 'KG-1',
+        description: 'Kindergarten Grade 1',
+        projectId: '1',
+        order: 1,
+        weight: 40, // 40% of project
+        books: [
+          {
+            id: 'kg1-book1',
+            name: 'Book 1',
+            type: 'student',
+            description: 'Student Book 1 for KG-1',
+            gradeId: 'kg1',
+            order: 1,
+            weight: 70, // 70% of KG-1 grade
+            units: [
+              {
+                id: 'kg1-book1-unit1',
+                name: 'Unit 1: Colors and Shapes',
+                description: 'Introduction to basic colors and shapes',
+                bookId: 'kg1-book1',
+                order: 1,
+                weight: 60, // 60% of Book 1
+                lessons: [
+                  {
+                    id: 'kg1-book1-unit1-lesson1',
+                    name: 'Lesson 1: Primary Colors',
+                    description: 'Learning red, blue, and yellow',
+                    unitId: 'kg1-book1-unit1',
+                    order: 1,
+                    weight: 50, // 50% of Unit 1
+                  },
+                  {
+                    id: 'kg1-book1-unit1-lesson2',
+                    name: 'Lesson 2: Basic Shapes',
+                    description: 'Circle, square, and triangle',
+                    unitId: 'kg1-book1-unit1',
+                    order: 2,
+                    weight: 50, // 50% of Unit 1
+                  },
+                ],
+              },
+              {
+                id: 'kg1-book1-unit2',
+                name: 'Unit 2: Numbers 1-10',
+                description: 'Introduction to counting and numbers',
+                bookId: 'kg1-book1',
+                order: 2,
+                weight: 40, // 40% of Book 1
+                lessons: [
+                  {
+                    id: 'kg1-book1-unit2-lesson1',
+                    name: 'Lesson 1: Numbers 1-5',
+                    description: 'Learning to count 1 to 5',
+                    unitId: 'kg1-book1-unit2',
+                    order: 1,
+                    weight: 100, // 100% of Unit 2 (only lesson)
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            id: 'kg1-teacher-guide',
+            name: 'Teacher Guide',
+            type: 'teacher',
+            description: 'Teacher guide for KG-1',
+            gradeId: 'kg1',
+            order: 2,
+            weight: 30, // 30% of KG-1 grade
+            units: [
+              {
+                id: 'kg1-tg-unit1',
+                name: 'Unit 1: Teaching Colors and Shapes',
+                description: 'Guide for teaching colors and shapes',
+                bookId: 'kg1-teacher-guide',
+                order: 1,
+                weight: 100, // 100% of Teacher Guide
+                lessons: [
+                  {
+                    id: 'kg1-tg-unit1-lesson1',
+                    name: 'Lesson 1: Color Activities',
+                    description: 'Activities for teaching colors',
+                    unitId: 'kg1-tg-unit1',
+                    order: 1,
+                    weight: 100, // 100% of Unit 1
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'kg2',
+        name: 'KG-2',
+        description: 'Kindergarten Grade 2',
+        projectId: '1',
+        order: 2,
+        weight: 35, // 35% of project
+        books: [
+          {
+            id: 'kg2-book1',
+            name: 'Book 1',
+            type: 'student',
+            description: 'Student Book 1 for KG-2',
+            gradeId: 'kg2',
+            order: 1,
+            weight: 100, // 100% of KG-2 grade
+            units: [
+              {
+                id: 'kg2-book1-unit1',
+                name: 'Unit 1: Letters A-M',
+                description: 'Introduction to first half of alphabet',
+                bookId: 'kg2-book1',
+                order: 1,
+                weight: 100, // 100% of Book 1
+                lessons: [
+                  {
+                    id: 'kg2-book1-unit1-lesson1',
+                    name: 'Lesson 1: Letters A-E',
+                    description: 'Learning letters A through E',
+                    unitId: 'kg2-book1-unit1',
+                    order: 1,
+                    weight: 100, // 100% of Unit 1
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'kg3',
+        name: 'KG-3',
+        description: 'Kindergarten Grade 3',
+        projectId: '1',
+        order: 3,
+        weight: 25, // 25% of project
+        books: [
+          {
+            id: 'kg3-book1',
+            name: 'Book 1',
+            type: 'student',
+            description: 'Student Book 1 for KG-3',
+            gradeId: 'kg3',
+            order: 1,
+            weight: 100, // 100% of KG-3 grade
+            units: [
+              {
+                id: 'kg3-book1-unit1',
+                name: 'Unit 1: Reading Readiness',
+                description: 'Preparing for reading',
+                bookId: 'kg3-book1',
+                order: 1,
+                weight: 100, // 100% of Book 1
+                lessons: [
+                  {
+                    id: 'kg3-book1-unit1-lesson1',
+                    name: 'Lesson 1: Phonics Basics',
+                    description: 'Introduction to phonics',
+                    unitId: 'kg3-book1-unit1',
+                    order: 1,
+                    weight: 100, // 100% of Unit 1
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: '2',
+    name: 'LMS Platform Redesign',
+    description: 'Complete overhaul of the learning management system interface and user experience',
+    category: 'IT Applications',
+    status: 'active',
+    startDate: new Date('2024-02-01'),
+    endDate: new Date('2024-08-15'),
+    progress: 42,
+    stages: [],
+    teamMembers: ['2', '4', '5'],
+  },
+  {
+    id: '3',
+    name: 'Interactive Science Course',
+    description: 'eLearning course with interactive animations and simulations for high school science',
+    category: 'eLearning Design',
+    status: 'planning',
+    startDate: new Date('2024-03-01'),
+    endDate: new Date('2024-09-30'),
+    progress: 15,
+    stages: [],
+    teamMembers: ['1', '2', '3'],
+  },
+  {
+    id: '4',
+    name: 'Corporate Training Module',
+    description: 'Employee onboarding and training content for new hires',
+    category: 'eLearning Design',
+    status: 'completed',
+    startDate: new Date('2023-10-01'),
+    endDate: new Date('2024-01-15'),
+    progress: 100,
+    stages: [],
+    teamMembers: ['1', '6'],
+  },
+];
+
+export const sampleTasks: Task[] = [
+  {
+    id: '1',
+    name: 'Content Strategy Development',
+    description: 'Create comprehensive content strategy for Pre-K curriculum',
+    projectId: '1',
+    stageId: 'stage-2',
+    gradeId: 'kg1',
+    bookId: 'kg1-book1',
+    unitId: 'kg1-book1-unit1',
+    lessonId: 'kg1-book1-unit1-lesson1',
+    componentPath: 'KG-1 > Book 1 > Unit 1: Colors and Shapes > Lesson 1: Primary Colors',
+    assignees: ['1', '6'],
+    skills: ['Content Writers', 'Instructional Designers'],
+    status: 'in-progress',
+    priority: 'high',
+    startDate: new Date('2024-01-15'),
+    endDate: new Date('2024-02-15'),
+    progress: 75,
+    estimatedHours: 40,
+    actualHours: 32,
+  },
+  {
+    id: '2',
+    name: 'UI/UX Design for LMS Dashboard',
+    description: 'Design new dashboard interface for the learning management system',
+    projectId: '2',
+    stageId: 'stage-2',
+    assignees: ['3'],
+    skills: ['Graphic Designers'],
+    status: 'under-review',
+    priority: 'high',
+    startDate: new Date('2024-02-01'),
+    endDate: new Date('2024-02-28'),
+    progress: 90,
+    estimatedHours: 60,
+    actualHours: 55,
+  },
+  {
+    id: '3',
+    name: 'Database Migration Script',
+    description: 'Create scripts for migrating user data to new LMS platform',
+    projectId: '2',
+    stageId: 'stage-2',
+    assignees: ['2'],
+    skills: ['Developers', 'Tech'],
+    status: 'not-started',
+    priority: 'medium',
+    startDate: new Date('2024-03-01'),
+    endDate: new Date('2024-03-15'),
+    progress: 0,
+    estimatedHours: 32,
+  },
+  {
+    id: '4',
+    name: 'Quality Assurance Testing',
+    description: 'Comprehensive testing of LMS functionality and user experience',
+    projectId: '2',
+    stageId: 'stage-2',
+    assignees: ['4'],
+    skills: ['QA'],
+    status: 'blocked',
+    priority: 'urgent',
+    startDate: new Date('2024-02-15'),
+    endDate: new Date('2024-01-30'), // Overdue
+    progress: 25,
+    estimatedHours: 48,
+    actualHours: 12,
+  },
+  {
+    id: '5',
+    name: 'Marketing Campaign Design',
+    description: 'Create promotional materials for new curriculum launch',
+    projectId: '1',
+    stageId: 'stage-1',
+    assignees: ['5'],
+    skills: ['Marketing'],
+    status: 'completed',
+    priority: 'medium',
+    startDate: new Date('2024-01-01'),
+    endDate: new Date('2024-01-31'),
+    progress: 100,
+    estimatedHours: 24,
+    actualHours: 26,
+  },
+  {
+    id: '6',
+    name: 'Animation Storyboard Creation',
+    description: 'Develop storyboards for interactive science course animations',
+    projectId: '3',
+    stageId: 'stage-2',
+    assignees: ['3'],
+    skills: ['Animators', 'Graphic Designers'],
+    status: 'in-progress',
+    priority: 'medium',
+    startDate: new Date('2024-02-10'),
+    endDate: new Date('2024-03-10'),
+    progress: 40,
+    estimatedHours: 36,
+    actualHours: 15,
+  },
+  {
+    id: '7',
+    name: 'KG-2 Letter Recognition Content',
+    description: 'Create content for letter recognition in KG-2',
+    projectId: '1',
+    stageId: 'stage-2',
+    gradeId: 'kg2',
+    bookId: 'kg2-book1',
+    unitId: 'kg2-book1-unit1',
+    lessonId: 'kg2-book1-unit1-lesson1',
+    componentPath: 'KG-2 > Book 1 > Unit 1: Letters A-M > Lesson 1: Letters A-E',
+    assignees: ['1'],
+    skills: ['Content Writers', 'Instructional Designers'],
+    status: 'not-started',
+    priority: 'medium',
+    startDate: new Date('2024-02-15'),
+    endDate: new Date('2024-03-15'),
+    progress: 0,
+    estimatedHours: 30,
+  },
+  {
+    id: '8',
+    name: 'KG-3 Phonics Activities',
+    description: 'Develop phonics activities for KG-3 students',
+    projectId: '1',
+    stageId: 'stage-2',
+    gradeId: 'kg3',
+    bookId: 'kg3-book1',
+    unitId: 'kg3-book1-unit1',
+    lessonId: 'kg3-book1-unit1-lesson1',
+    componentPath: 'KG-3 > Book 1 > Unit 1: Reading Readiness > Lesson 1: Phonics Basics',
+    assignees: ['6'],
+    skills: ['Instructional Designers'],
+    status: 'in-progress',
+    priority: 'high',
+    startDate: new Date('2024-02-01'),
+    endDate: new Date('2024-03-01'),
+    progress: 30,
+    estimatedHours: 25,
+    actualHours: 8,
+  },
+];
