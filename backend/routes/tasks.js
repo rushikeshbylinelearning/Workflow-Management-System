@@ -23,6 +23,7 @@ const {
   getBulkCreatePreview,
   bulkCreateTasks,
   bulkUploadTasks,
+  bulkUpdateTaskHierarchy,
   bulkAssignTasks,
   // Extension endpoints
   requestTaskExtension,
@@ -344,6 +345,12 @@ router.post('/project/:project_id/bulk-create',
 router.post('/bulk-upload',
   requireAdminOrPMAuth,
   bulkUploadTasks
+);
+
+// Bulk update educational hierarchy of existing tasks (Task ID + Grade/Book/Unit/Lesson)
+router.post('/bulk-upload-hierarchy-update',
+  requireAdminOrPMAuth,
+  bulkUpdateTaskHierarchy
 );
 
 // Export tasks to Excel (all or filtered)

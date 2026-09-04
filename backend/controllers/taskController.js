@@ -5,6 +5,7 @@ const resubmissionDeadline = require('../services/resubmissionDeadlineService');
 const { assertTaskAccess, assertCanManageTasks, canManageTasks } = require('../utils/taskAccess');
 const { ensureTeamMembersOnProject } = require('../utils/projectMembership');
 const { emitProjectTaskUpdate } = require('../utils/emitProjectTaskUpdate');
+const { resolveHierarchyIds, resolveHierarchyUpdateIds } = require('../utils/bulkUploadHierarchy');
 
 const TEAM_ASSIGNEE_UPDATE_FIELDS = new Set(['status', 'progress']);
 
@@ -1500,6 +1501,18 @@ const bulkUploadTasks = async (req, res) => {
     if (!task['Project']?.toString().trim()) {
       rowErrors.push({ row, error: 'Project is required' });
     }
+    if (!task['Grade']?.toString().trim()) {
+      rowErrors.push({ row, error: 'Grade is required' });
+    }
+    if (!task['Book']?.toString().trim()) {
+      rowErrors.push({ row, error: 'Book is required' });
+    }
+    if (!task['Unit']?.toString().trim()) {
+      rowErrors.push({ row, error: 'Unit is required' });
+    }
+    if (!task['Lesson']?.toString().trim()) {
+      rowErrors.push({ row, error: 'Lesson is required' });
+    }
     if (task['Status'] && !VALID_STATUSES.includes(task['Status'].toString().toLowerCase().trim().replace(/\s+/g, '-'))) {
       rowErrors.push({ row, error: `Invalid Status "${task['Status']}"` });
     }
@@ -1547,6 +1560,26 @@ const bulkUploadTasks = async (req, res) => {
       if (!stagesByProject[s.project_id]) stagesByProject[s.project_id] = [];
       stagesByProject[s.project_id].push(s);
     }
+
+    let allGrades = [];
+    let allBooks = [];
+    let allUnits = [];
+    let allLessons = [];
+    try {
+      [allGrades] = await connection.execute('SELECT id, name, project_id FROM grades');
+      [allBooks] = await connection.execute('SELECT id, name, grade_id FROM books');
+      [allUnits] = await connection.execute('SELECT id, name, book_id FROM units');
+      [allLessons] = await connection.execute('SELECT id, name, unit_id FROM lessons');
+    } catch (catalogError) {
+      console.error('[BulkUpload] Hierarchy catalog load failed:', catalogError.message);
+      await connection.query('ROLLBACK');
+      connection.release();
+      return res.status(400).json({
+        success: false,
+        errors: [{ row: 0, error: 'Educational hierarchy data could not be loaded. Please try again.' }],
+      });
+    }
+    const hierarchyCatalogs = { grades: allGrades, books: allBooks, units: allUnits, lessons: allLessons };
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
@@ -1623,6 +1656,19 @@ const bulkUploadTasks = async (req, res) => {
         console.log(`[BulkUpload] Row ${row} stage matched: id=${stageId}`);
       }
 
+      const hierarchy = resolveHierarchyIds({
+        projectId,
+        projectName,
+        task,
+        catalogs: hierarchyCatalogs,
+      });
+      if (hierarchy.error) {
+        await connection.query('ROLLBACK');
+        connection.release();
+        return res.status(400).json({ success: false, errors: [{ row, error: hierarchy.error }] });
+      }
+      const { gradeId, bookId, unitId, lessonId } = hierarchy;
+
       const status = (task['Status'] || 'not-started').toString().toLowerCase().trim().replace(/\s+/g, '-');
       const priority = (task['Priority'] || 'medium').toString().toLowerCase().trim().replace(/\s+/g, '-');
       const estimatedHours = parseInt(task['Estimated Hours']) || 0;
@@ -1652,13 +1698,14 @@ const bulkUploadTasks = async (req, res) => {
       const serverLocation = task['File Location']?.toString().trim() || null;
 
       const [result] = await connection.execute(
-        `INSERT INTO tasks (name, description, project_id, category_stage_id, status, priority, start_date, end_date, progress, estimated_hours, server_location, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (name, description, project_id, category_stage_id, status, priority, start_date, end_date, progress, estimated_hours, server_location, created_by, grade_id, book_id, unit_id, lesson_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           task['Task Name'].toString().trim(),
           task['Description']?.toString().trim() || null,
           projectId, stageId, status, priority,
           startDate, endDate, progress, estimatedHours, serverLocation, createdBy,
+          gradeId, bookId, unitId, lessonId,
         ]
       );
       const taskId = result.insertId;
@@ -1707,6 +1754,203 @@ const bulkUploadTasks = async (req, res) => {
     } catch (_) {}
     console.error('Bulk upload tasks error:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to upload tasks' });
+  }
+};
+
+// =====================================================
+// BULK UPDATE TASK EDUCATIONAL HIERARCHY FROM CSV
+// Body: [{ rowIndex, 'Task ID', Grade, Book, Unit, Lesson }]
+// Updates only grade_id, book_id, unit_id, lesson_id. Empty cells keep existing values.
+// =====================================================
+const bulkUpdateTaskHierarchy = async (req, res) => {
+  const rows = req.body;
+  const isPreview = String(req.query.preview || '') === '1' || String(req.query.preview || '') === 'true';
+  const failMessage = isPreview
+    ? 'Preview validation failed. No changes were applied.'
+    : 'Educational Hierarchy Update Failed. No changes were applied.';
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ success: false, error: 'Request body must be a non-empty array of rows' });
+  }
+
+  if (rows.length > 500) {
+    return res.status(400).json({ success: false, error: 'Maximum 500 rows allowed per upload' });
+  }
+
+  const rowErrors = [];
+  const parsed = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowNum = row.rowIndex || (i + 2);
+    const rawId = row['Task ID'] ?? row.task_id ?? row.taskId;
+    const taskId = parseInt(rawId, 10);
+
+    if (rawId === undefined || rawId === null || String(rawId).trim() === '') {
+      rowErrors.push({ row: rowNum, error: 'Task ID is required for hierarchy update.' });
+      continue;
+    }
+    if (isNaN(taskId) || taskId < 1) {
+      rowErrors.push({ row: rowNum, error: `Task ID "${rawId}" was not found.` });
+      continue;
+    }
+    parsed.push({ rowNum, taskId, row });
+  }
+
+  if (parsed.length === 0) {
+    return res.status(400).json({
+      success: false,
+      preview: isPreview,
+      updated: 0,
+      skipped: 0,
+      total: rows.length,
+      errors: rowErrors,
+      foundTasks: [],
+      message: failMessage,
+    });
+  }
+
+  const pool = db.getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    let allGrades = [];
+    let allBooks = [];
+    let allUnits = [];
+    let allLessons = [];
+    try {
+      [allGrades] = await connection.execute('SELECT id, name, project_id FROM grades');
+      [allBooks] = await connection.execute('SELECT id, name, grade_id FROM books');
+      [allUnits] = await connection.execute('SELECT id, name, book_id FROM units');
+      [allLessons] = await connection.execute('SELECT id, name, unit_id FROM lessons');
+    } catch (catalogError) {
+      console.error('[HierarchyUpdate] Catalog load failed:', catalogError.message);
+      connection.release();
+      return res.status(400).json({
+        success: false,
+        preview: isPreview,
+        updated: 0,
+        skipped: 0,
+        total: rows.length,
+        errors: [{ row: 0, error: 'Educational hierarchy data could not be loaded. Please try again.' }],
+        foundTasks: [],
+        message: failMessage,
+      });
+    }
+
+    const catalogs = { grades: allGrades, books: allBooks, units: allUnits, lessons: allLessons };
+    const uniqueIds = [...new Set(parsed.map((p) => p.taskId))];
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const [taskRows] = uniqueIds.length
+      ? await connection.execute(
+          `SELECT t.id, t.name, t.project_id, t.grade_id, t.book_id, t.unit_id, t.lesson_id, p.name as project_name
+           FROM tasks t
+           LEFT JOIN projects p ON p.id = t.project_id
+           WHERE t.id IN (${placeholders})`,
+          uniqueIds
+        )
+      : [[]];
+    const tasksById = {};
+    for (const t of taskRows) tasksById[Number(t.id)] = t;
+    const foundTasks = Object.values(tasksById).map((t) => ({ id: Number(t.id), name: t.name }));
+
+    const updates = [];
+    for (const item of parsed) {
+      const existingTask = tasksById[item.taskId];
+      if (!existingTask) {
+        rowErrors.push({ row: item.rowNum, error: `Task ID "${item.taskId}" was not found.` });
+        continue;
+      }
+
+      const hierarchy = resolveHierarchyUpdateIds({
+        projectId: existingTask.project_id,
+        projectName: existingTask.project_name || '',
+        task: item.row,
+        catalogs,
+        existing: {
+          gradeId: existingTask.grade_id,
+          bookId: existingTask.book_id,
+          unitId: existingTask.unit_id,
+          lessonId: existingTask.lesson_id,
+        },
+      });
+
+      if (hierarchy.error) {
+        rowErrors.push({ row: item.rowNum, error: `Task ID ${item.taskId}: ${hierarchy.error}` });
+        continue;
+      }
+
+      updates.push({
+        id: item.taskId,
+        gradeId: hierarchy.gradeId,
+        bookId: hierarchy.bookId,
+        unitId: hierarchy.unitId,
+        lessonId: hierarchy.lessonId,
+      });
+    }
+
+    if (rowErrors.length > 0) {
+      connection.release();
+      return res.status(400).json({
+        success: false,
+        preview: isPreview,
+        updated: 0,
+        skipped: 0,
+        total: rows.length,
+        errors: rowErrors,
+        foundTasks,
+        message: failMessage,
+      });
+    }
+
+    if (isPreview) {
+      connection.release();
+      return res.status(200).json({
+        success: true,
+        preview: true,
+        updated: 0,
+        skipped: 0,
+        total: rows.length,
+        errors: [],
+        foundTasks,
+        message: 'Preview only. No changes were applied.',
+      });
+    }
+
+    await connection.query('START TRANSACTION');
+
+    for (const upd of updates) {
+      await connection.execute(
+        `UPDATE tasks SET grade_id = ?, book_id = ?, unit_id = ?, lesson_id = ? WHERE id = ?`,
+        [upd.gradeId, upd.bookId, upd.unitId, upd.lessonId, upd.id]
+      );
+    }
+
+    await connection.query('COMMIT');
+    connection.release();
+
+    res.status(200).json({
+      success: true,
+      updated: updates.length,
+      skipped: 0,
+      total: rows.length,
+      errors: [],
+      message: `Educational Hierarchy Update Complete. Updated: ${updates.length}.`,
+    });
+  } catch (error) {
+    try {
+      await connection.query('ROLLBACK');
+      connection.release();
+    } catch (_) {}
+    console.error('Bulk update task hierarchy error:', error);
+    res.status(500).json({
+      success: false,
+      updated: 0,
+      skipped: 0,
+      total: rows.length,
+      error: error.message || 'Failed to update task hierarchy',
+      message: 'Educational Hierarchy Update Failed. No changes were applied.',
+    });
   }
 };
 
@@ -1814,5 +2058,5 @@ module.exports = {
   requestTaskExtension, getTaskExtensions, reviewExtensionRequest,
   addTaskRemark, getTaskRemarks, getTaskRemarksHistory, deleteTaskRemark,
   getNotifications, getTeamNotifications, reviewTaskCompletion,
-  bulkUploadTasks, bulkAssignTasks,
+  bulkUploadTasks, bulkUpdateTaskHierarchy, bulkAssignTasks,
 };

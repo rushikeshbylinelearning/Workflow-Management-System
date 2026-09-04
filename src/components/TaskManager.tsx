@@ -338,19 +338,24 @@ export function TaskManager() {
     const fetchReferenceData = async () => {
       try {
         const emptyList: Promise<any> = Promise.resolve([]);
+        const asList = (promise: Promise<any>) =>
+          promise.catch((err) => {
+            console.error('Reference data fetch failed:', err);
+            return { data: [] };
+          });
         const projectsPromise = canManageTasks
           ? projectService.getAll()
           : teamProjectService.getAll().then((data) => ({ data }));
         const [teamMembersData, teamsData, stagesData, projectsResponse, skillsData, gradesData, booksData, unitsData, lessonsData] = await Promise.all([
-          canManageTasks ? teamService.getMembers() : emptyList,
-          canManageTasks ? teamService.getTeams() : emptyList,
-          stageService.getAll(),
-          projectsPromise,
-          skillService.getAll(),
-          canManageTasks ? gradeService.getAll() : emptyList,
-          canManageTasks ? bookService.getAll() : emptyList,
-          canManageTasks ? unitService.getAll() : emptyList,
-          canManageTasks ? lessonService.getAll() : emptyList,
+          canManageTasks ? asList(teamService.getMembers()) : emptyList,
+          canManageTasks ? asList(teamService.getTeams()) : emptyList,
+          asList(stageService.getAll()),
+          asList(projectsPromise),
+          asList(skillService.getAll()),
+          canManageTasks ? asList(gradeService.getAll()) : emptyList,
+          canManageTasks ? asList(bookService.getAll()) : emptyList,
+          canManageTasks ? asList(unitService.getAll()) : emptyList,
+          canManageTasks ? asList(lessonService.getAll()) : emptyList,
         ]);
         const teamMembersList = teamMembersData.data || teamMembersData;
         const teamsList = teamsData.data || teamsData;
@@ -2169,6 +2174,10 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!formData.gradeId) {
+      return;
+    }
+
     // Build educational hierarchy path for display
     let educationalPath = '';
     const selectedProject = projects.find(p => p.id === parseInt(formData.projectId) || p.id === formData.projectId);
@@ -2460,9 +2469,10 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Educational Hierarchy (Optional)
+              Educational Hierarchy *
             </label>
             <select
+              required
               value={(() => {
                 // Find the matching educational hierarchy item based on current form data
                 const formGradeId = formData.gradeId ? parseInt(formData.gradeId) : null;
@@ -2502,7 +2512,7 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={!formData.projectId}
             >
-              <option value="">Project Level Task</option>
+              <option value="">Select Educational Hierarchy</option>
               {availableEducationalHierarchy.map(component => (
                 <option key={component.id} value={component.id}>
                   {component.name} ({component.type})
@@ -2510,7 +2520,7 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Select a specific educational hierarchy item to assign this task to a particular grade, unit, or lesson
+              Required. Select a grade, book, unit, or lesson for this task.
             </p>
           </div>
 

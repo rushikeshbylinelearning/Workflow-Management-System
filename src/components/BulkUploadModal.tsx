@@ -16,10 +16,15 @@ interface BulkUploadModalProps {
 
 interface ParsedRow {
   rowIndex: number;
-  'Task Name': string;
+  'Task ID'?: string;
+  'Task Name'?: string;
   Description?: string;
-  Project: string;
-  Stage: string;
+  Project?: string;
+  Stage?: string;
+  Grade?: string;
+  Book?: string;
+  Unit?: string;
+  Lesson?: string;
   Status?: string;
   Priority?: string;
   'Estimated Hours'?: number | string;
@@ -58,6 +63,10 @@ function downloadTemplate() {
     'Description',
     'Project',
     'Stage',
+    'Grade',
+    'Book',
+    'Unit',
+    'Lesson',
     'Status',
     'Priority',
     'Estimated Hours',
@@ -72,13 +81,17 @@ function downloadTemplate() {
     'Create wireframes for the homepage',
     'My Project Name',
     'Plan',
+    'Grade 1',
+    'Math Book 1',
+    'Numbers',
+    'Counting 1-10',
     'not-started',
     'medium',
     '8',
     '2026-04-15',
     '2026-04-22',
     'john@example.com, jane@example.com',
-    '\\\\Server\\Projects\\Byline\\Assets',
+    '',
   ];
 
   const ws = XLSX.utils.aoa_to_sheet([headers, example]);
@@ -89,6 +102,29 @@ function downloadTemplate() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Tasks');
   XLSX.writeFile(wb, 'bulk_tasks_template.xlsx');
+}
+
+function downloadHierarchyUpdateTemplate() {
+  const headers = ['Task ID', 'Grade', 'Book', 'Unit', 'Lesson'];
+  const example = ['1025', 'Grade 5', 'Mathematics Book', 'Unit 2', 'Fractions'];
+  const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+  ws['!cols'] = headers.map((h) => ({ wch: Math.max(h.length + 4, 18) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Hierarchy Update');
+  XLSX.writeFile(wb, 'bulk_task_hierarchy_update_template.xlsx');
+}
+
+function isHierarchyUpdateFile(headers: string[]): boolean {
+  const normalized = headers.map((h) => h.replace(/^\uFEFF/, '').trim().toLowerCase());
+  return normalized.includes('task id') && !normalized.includes('task name');
+}
+
+function pickColumn(row: Record<string, any>, key: string): any {
+  if (row[key] !== undefined) return row[key];
+  const found = Object.keys(row).find(
+    (k) => k.replace(/^\uFEFF/, '').trim().toLowerCase() === key.toLowerCase()
+  );
+  return found ? row[found] : '';
 }
 
 // ─── Frontend validation ──────────────────────────────────────────────────────
@@ -133,8 +169,44 @@ function validateRows(rows: ParsedRow[]): RowError[] {
         errors.push({ row: r, error: 'Estimated Hours must be a positive number' });
       }
     }
+
+    const grade = row['Grade']?.toString().trim() || '';
+    const book = row['Book']?.toString().trim() || '';
+    const unit = row['Unit']?.toString().trim() || '';
+    const lesson = row['Lesson']?.toString().trim() || '';
+    if (!grade) {
+      errors.push({ row: r, error: 'Grade is required' });
+    }
+    if (!book) {
+      errors.push({ row: r, error: 'Book is required' });
+    }
+    if (!unit) {
+      errors.push({ row: r, error: 'Unit is required' });
+    }
+    if (!lesson) {
+      errors.push({ row: r, error: 'Lesson is required' });
+    }
+    if (book && !grade) {
+      errors.push({ row: r, error: `Book "${book}" cannot be mapped without a Grade.` });
+    }
+    if (unit && !book) {
+      errors.push({ row: r, error: `Unit "${unit}" cannot be mapped without a Book.` });
+    }
+    if (lesson && !unit) {
+      errors.push({ row: r, error: `Lesson "${lesson}" cannot be mapped without a Unit.` });
+    }
   });
 
+  return errors;
+}
+
+function validateHierarchyUpdateRows(rows: ParsedRow[]): RowError[] {
+  const errors: RowError[] = [];
+  rows.forEach((row) => {
+    if (!row['Task ID']?.toString().trim()) {
+      errors.push({ row: row.rowIndex, error: 'Task ID is required for hierarchy update.' });
+    }
+  });
   return errors;
 }
 
@@ -149,6 +221,8 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
   const [isDragging, setIsDragging] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const [successCount, setSuccessCount] = useState(0);
+  const [uploadMode, setUploadMode] = useState<'create' | 'hierarchy-update'>('create');
+  const [updateSummary, setUpdateSummary] = useState({ total: 0, updated: 0, skipped: 0, errors: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const reset = () => {
@@ -159,6 +233,8 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
     setUploadError(null);
     setFileName(null);
     setSuccessCount(0);
+    setUploadMode('create');
+    setUpdateSummary({ total: 0, updated: 0, skipped: 0, errors: 0 });
   };
 
   const handleClose = () => {
@@ -189,6 +265,9 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
         const wb = XLSX.read(data, { type: 'binary', cellDates: true, dateNF: 'yyyy-mm-dd' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const json: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, dateNF: 'yyyy-mm-dd' });
+        const headerRow = (XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })[0] || []) as any[];
+        const headers = headerRow.map((h) => String(h ?? '').replace(/^\uFEFF/, '').trim());
+        const hierarchyUpdate = isHierarchyUpdateFile(headers);
 
         if (json.length === 0) {
           setUploadError('The file is empty or has no data rows.');
@@ -197,6 +276,74 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
 
         if (json.length > MAX_ROWS) {
           setUploadError(`File contains ${json.length} rows. Maximum allowed is ${MAX_ROWS}.`);
+          return;
+        }
+
+        // Format a Date as YYYY-MM-DD using LOCAL date parts to avoid UTC offset shifting the day
+        const dateToLocalYMD = (d: Date): string => {
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        };
+
+        const normalize = (val: any): string => {
+          if (!val) return '';
+          if (val instanceof Date) return dateToLocalYMD(val);
+          return val.toString().trim();
+        };
+
+        if (hierarchyUpdate) {
+          const rows: ParsedRow[] = json.map((row, i) => ({
+            rowIndex: i + 2,
+            'Task ID': normalize(pickColumn(row, 'Task ID')),
+            Grade: normalize(pickColumn(row, 'Grade')),
+            Book: normalize(pickColumn(row, 'Book')),
+            Unit: normalize(pickColumn(row, 'Unit')),
+            Lesson: normalize(pickColumn(row, 'Lesson')),
+          }));
+          const clientErrors = validateHierarchyUpdateRows(rows);
+          setUploadMode('hierarchy-update');
+          setParsedRows(rows);
+          setValidationErrors(clientErrors);
+          setServerErrors([]);
+          setStep('preview');
+          if (clientErrors.length === 0) {
+            const token = sessionStorage.getItem('access_token') || sessionStorage.getItem('teamToken');
+            const API_URL = import.meta.env.VITE_API_URL || 'https://workflow.bylinelms.com/api';
+            fetch(`${API_URL}/tasks/bulk-upload-hierarchy-update?preview=1`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token && { Authorization: `Bearer ${token}` }),
+              },
+              body: JSON.stringify(rows.map((row) => ({
+                rowIndex: row.rowIndex,
+                'Task ID': row['Task ID'],
+                Grade: row.Grade,
+                Book: row.Book,
+                Unit: row.Unit,
+                Lesson: row.Lesson,
+              }))),
+            })
+              .then((response) => response.json().then((result) => ({ response, result })))
+              .then(({ response, result }) => {
+                if (Array.isArray(result.foundTasks)) {
+                  setParsedRows((current) =>
+                    current.map((r) => {
+                      const found = result.foundTasks.find((t: { id: number; name?: string }) => String(t.id) === String(r['Task ID']));
+                      return found?.name ? { ...r, 'Task Name': found.name } : r;
+                    })
+                  );
+                }
+                if (!response.ok && Array.isArray(result.errors)) {
+                  setServerErrors(result.errors);
+                }
+              })
+              .catch(() => {
+                // Preview lookup is optional; submit still validates on the server.
+              });
+          }
           return;
         }
 
@@ -262,6 +409,10 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             Description: normalize(row['Description']),
             Project: normalize(row['Project']),
             Stage: normalize(row['Stage']),
+            Grade: normalize(row['Grade']),
+            Book: normalize(row['Book']),
+            Unit: normalize(row['Unit']),
+            Lesson: normalize(row['Lesson']),
             Status: normalizeStatus(row['Status']),
             Priority: normalizePriority(row['Priority']),
             'Estimated Hours': row['Estimated Hours'] !== '' ? row['Estimated Hours'] : undefined,
@@ -273,6 +424,7 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
         });
 
         const errors = validateRows(rows);
+        setUploadMode('create');
         setParsedRows(rows);
         setValidationErrors(errors);
         setStep('preview');
@@ -305,21 +457,45 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
     try {
       const token = sessionStorage.getItem('access_token') || sessionStorage.getItem('teamToken');
       const API_URL = import.meta.env.VITE_API_URL || 'https://workflow.bylinelms.com/api';
+      const endpoint = uploadMode === 'hierarchy-update'
+        ? `${API_URL}/tasks/bulk-upload-hierarchy-update`
+        : `${API_URL}/tasks/bulk-upload`;
+      const payload = uploadMode === 'hierarchy-update'
+        ? parsedRows.map((row) => ({
+            rowIndex: row.rowIndex,
+            'Task ID': row['Task ID'],
+            Grade: row.Grade,
+            Book: row.Book,
+            Unit: row.Unit,
+            Lesson: row.Lesson,
+          }))
+        : parsedRows;
 
-      const response = await fetch(`${API_URL}/tasks/bulk-upload`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token && { Authorization: `Bearer ${token}` }),
         },
-        body: JSON.stringify(parsedRows),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
+        if (Array.isArray(result.foundTasks)) {
+          setParsedRows((current) =>
+            current.map((r) => {
+              const found = result.foundTasks.find((t: { id: number; name?: string }) => String(t.id) === String(r['Task ID']));
+              return found?.name ? { ...r, 'Task Name': found.name } : r;
+            })
+          );
+        }
         if (result.errors && Array.isArray(result.errors)) {
-          setServerErrors(result.errors);
+          const prefix = uploadMode === 'hierarchy-update' && result.message && !result.preview
+            ? [{ row: 0, error: result.message }]
+            : [];
+          setServerErrors([...prefix, ...result.errors]);
           setStep('preview');
         } else {
           setServerErrors([{ row: 0, error: result.error || result.message || 'Upload failed' }]);
@@ -328,7 +504,13 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
         return;
       }
 
-      setSuccessCount(result.created || parsedRows.length);
+      setSuccessCount(result.created || result.updated || parsedRows.length);
+      setUpdateSummary({
+        total: result.total ?? parsedRows.length,
+        updated: result.updated ?? 0,
+        skipped: result.skipped ?? 0,
+        errors: Array.isArray(result.errors) ? result.errors.length : 0,
+      });
       setStep('done');
       onSuccess();
     } catch (err: any) {
@@ -350,10 +532,25 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
               <div>
                 <p className="text-sm font-semibold text-blue-800">Step 1 — Download the template</p>
                 <p className="text-xs text-blue-600 mt-0.5">Fill in the Excel template and upload it below.</p>
+                <p className="text-xs text-blue-600 mt-1">Grade, Book, Unit, and Lesson are required. Each value must belong to its parent under the selected project.</p>
+                <p className="text-xs text-blue-600 mt-1">File Location is optional. Leave it blank if not needed.</p>
               </div>
               <Button variant="outline" size="sm" onClick={downloadTemplate}>
                 <Download className="w-4 h-4 mr-2" />
                 Download Template
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
+              <div>
+                <p className="text-sm font-semibold text-gray-800">Update Educational Hierarchy</p>
+                <p className="text-xs text-gray-600 mt-0.5">Use this template to update Educational Hierarchy mapping for existing tasks.</p>
+                <p className="text-xs text-gray-600 mt-1">Task ID is required. Grade, Book, Unit, and Lesson reference the existing educational hierarchy.</p>
+                <p className="text-xs text-gray-600 mt-1">Only Educational Hierarchy mapping will be updated. Existing task information will not be changed.</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={downloadHierarchyUpdateTemplate}>
+                <Download className="w-4 h-4 mr-2" />
+                Download Hierarchy Update Template
               </Button>
             </div>
 
@@ -389,7 +586,9 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             {/* Template field reference */}
             <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3">
               <p className="font-semibold text-gray-700 mb-1">Template columns:</p>
-              <p>Task Name* | Description | Project* | Stage* | Status | Priority | Estimated Hours | Start Date (YYYY-MM-DD) | Due Date (YYYY-MM-DD) | Assignees (comma-separated emails) | File Location</p>
+              <p>Task Name* | Description | Project* | Stage* | Grade* | Book* | Unit* | Lesson* | Status | Priority | Estimated Hours | Start Date (YYYY-MM-DD) | Due Date (YYYY-MM-DD) | Assignees (comma-separated emails) | File Location (optional)</p>
+              <p className="mt-2 font-semibold text-gray-700">Hierarchy update columns:</p>
+              <p>Task ID* | Grade | Book | Unit | Lesson — empty Grade/Book/Unit/Lesson cells leave the current mapping unchanged.</p>
               <p className="mt-1">Valid Status: {VALID_STATUSES.join(', ')}</p>
               <p>Valid Priority: {VALID_PRIORITIES.join(', ')}</p>
             </div>
@@ -404,7 +603,10 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
                 <FileSpreadsheet className="w-5 h-5 text-blue-600" />
                 <div>
                   <p className="text-sm font-semibold text-gray-800">{fileName}</p>
-                  <p className="text-xs text-gray-500">{parsedRows.length} rows parsed</p>
+                  <p className="text-xs text-gray-500">
+                    {parsedRows.length} rows parsed
+                    {uploadMode === 'hierarchy-update' ? ' — Educational Hierarchy update' : ''}
+                  </p>
                 </div>
               </div>
               <button
@@ -441,28 +643,70 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             <div className="overflow-auto max-h-72 border border-gray-200 rounded-lg">
               <table className="w-full text-xs">
                 <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">#</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Task Name</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Project</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Stage</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Status</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Priority</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Start Date</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Due Date</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Assignees</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">File Location</th>
-                  </tr>
+                  {uploadMode === 'hierarchy-update' ? (
+                    <tr>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">#</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Task ID</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Existing Task</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Grade</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Book</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Unit</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Lesson</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Result</th>
+                    </tr>
+                  ) : (
+                    <tr>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">#</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Task Name</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Project</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Stage</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Grade</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Book</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Unit</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Lesson</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Validation</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Status</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Priority</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Start Date</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Due Date</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Assignees</th>
+                      <th className="px-3 py-2 text-left text-gray-500 font-medium">File Location</th>
+                    </tr>
+                  )}
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {parsedRows.map((row) => {
                     const hasError = errorRowSet.has(row.rowIndex);
+                    const rowError = [...validationErrors, ...serverErrors].find((e) => e.row === row.rowIndex);
+                    if (uploadMode === 'hierarchy-update') {
+                      return (
+                        <tr key={row.rowIndex} className={hasError ? 'bg-red-50' : 'hover:bg-gray-50'}>
+                          <td className="px-3 py-2 text-gray-400">{row.rowIndex}</td>
+                          <td className="px-3 py-2 font-medium text-gray-800">{row['Task ID'] || <span className="text-gray-300">—</span>}</td>
+                          <td className="px-3 py-2 text-gray-500 max-w-[160px] truncate">{row['Task Name'] || <span className="text-gray-300">—</span>}</td>
+                          <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Grade'] || <span className="text-gray-300">—</span>}</td>
+                          <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Book'] || <span className="text-gray-300">—</span>}</td>
+                          <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Unit'] || <span className="text-gray-300">—</span>}</td>
+                          <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Lesson'] || <span className="text-gray-300">—</span>}</td>
+                          <td className={`px-3 py-2 max-w-[220px] truncate ${rowError ? 'text-red-600' : 'text-green-700'}`}>
+                            {rowError ? rowError.error : 'Valid'}
+                          </td>
+                        </tr>
+                      );
+                    }
                     return (
                       <tr key={row.rowIndex} className={hasError ? 'bg-red-50' : 'hover:bg-gray-50'}>
                         <td className="px-3 py-2 text-gray-400">{row.rowIndex}</td>
                         <td className="px-3 py-2 font-medium text-gray-800 max-w-[160px] truncate">{row['Task Name']}</td>
                         <td className="px-3 py-2 text-gray-600 max-w-[120px] truncate">{row['Project']}</td>
                         <td className="px-3 py-2 text-gray-600">{row['Stage']}</td>
+                        <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Grade'] || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Book'] || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Unit'] || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-gray-600 max-w-[100px] truncate">{row['Lesson'] || <span className="text-gray-300">—</span>}</td>
+                        <td className={`px-3 py-2 max-w-[180px] truncate ${rowError ? 'text-red-600' : 'text-green-700'}`}>
+                          {rowError ? rowError.error : 'OK'}
+                        </td>
                         <td className="px-3 py-2">
                           <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
                             row['Status'] === 'completed' ? 'bg-green-100 text-green-700' :
@@ -490,11 +734,13 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
               <Button variant="outline" onClick={handleClose}>Cancel</Button>
               <Button
                 onClick={handleSubmit}
-                disabled={validationErrors.length > 0}
-                className={validationErrors.length > 0 ? 'opacity-50 cursor-not-allowed' : ''}
+                disabled={validationErrors.length > 0 || (uploadMode === 'hierarchy-update' && serverErrors.length > 0)}
+                className={validationErrors.length > 0 || (uploadMode === 'hierarchy-update' && serverErrors.length > 0) ? 'opacity-50 cursor-not-allowed' : ''}
               >
                 <Upload className="w-4 h-4 mr-2" />
-                Upload {parsedRows.length} Task{parsedRows.length !== 1 ? 's' : ''}
+                {uploadMode === 'hierarchy-update'
+                  ? `Update Hierarchy for ${parsedRows.length} Task${parsedRows.length !== 1 ? 's' : ''}`
+                  : `Upload ${parsedRows.length} Task${parsedRows.length !== 1 ? 's' : ''}`}
               </Button>
             </div>
           </>
@@ -504,7 +750,11 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
         {step === 'submitting' && (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
             <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
-            <p className="text-sm font-medium text-gray-700">Uploading {parsedRows.length} tasks...</p>
+            <p className="text-sm font-medium text-gray-700">
+              {uploadMode === 'hierarchy-update'
+                ? `Updating educational hierarchy for ${parsedRows.length} task${parsedRows.length !== 1 ? 's' : ''}...`
+                : `Uploading ${parsedRows.length} tasks...`}
+            </p>
             <p className="text-xs text-gray-400">Please wait, this may take a moment.</p>
           </div>
         )}
@@ -515,7 +765,16 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center">
               <CheckCircle className="w-9 h-9 text-green-600" />
             </div>
-            <p className="text-lg font-semibold text-gray-800">{successCount} Task{successCount !== 1 ? 's' : ''} Created Successfully</p>
+            {uploadMode === 'hierarchy-update' ? (
+              <>
+                <p className="text-lg font-semibold text-gray-800">Educational Hierarchy Update Complete</p>
+                <p className="text-sm text-gray-600">
+                  Total Rows: {updateSummary.total} · Updated: {updateSummary.updated} · Skipped: {updateSummary.skipped} · Errors: {updateSummary.errors}
+                </p>
+              </>
+            ) : (
+              <p className="text-lg font-semibold text-gray-800">{successCount} Task{successCount !== 1 ? 's' : ''} Created Successfully</p>
+            )}
             <p className="text-sm text-gray-500">The task list has been refreshed.</p>
             <Button onClick={handleClose}>
               <X className="w-4 h-4 mr-2" />
