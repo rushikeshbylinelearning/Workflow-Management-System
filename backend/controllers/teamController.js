@@ -474,7 +474,8 @@ const removePerformanceFlag = async (req, res) => {
 // Get all team members (existing functionality)
 const getAllTeamMembers = async (req, res) => {
   try {
-    
+    const includeInactive = req.query.includeInactive === 'true';
+
     const teamMembers = await db.query(`
       SELECT 
         tm.*,
@@ -486,7 +487,27 @@ const getAllTeamMembers = async (req, res) => {
         COUNT(DISTINCT CASE WHEN pf.type = 'green' THEN pf.id END) as green_flags,
         COUNT(DISTINCT ta.task_id) as task_count,
         GROUP_CONCAT(DISTINCT t.name) as team_names,
-        GROUP_CONCAT(DISTINCT t.id) as team_ids
+        GROUP_CONCAT(DISTINCT t.id) as team_ids,
+        (
+          SELECT COUNT(DISTINCT p2.id)
+          FROM projects p2
+          INNER JOIN tasks t2 ON t2.project_id = p2.id
+          INNER JOIN task_assignees ta2 ON ta2.task_id = t2.id
+            AND ta2.assignee_id = tm.id AND ta2.assignee_type = 'team'
+          WHERE p2.status IN ('active', 'planning', 'on-hold')
+            AND NOT (p2.end_date IS NOT NULL AND p2.end_date < CURDATE()
+                     AND p2.status NOT IN ('completed', 'cancelled'))
+        ) as active_project_count,
+        (
+          SELECT GROUP_CONCAT(DISTINCT p2.name ORDER BY p2.name SEPARATOR '||')
+          FROM projects p2
+          INNER JOIN tasks t2 ON t2.project_id = p2.id
+          INNER JOIN task_assignees ta2 ON ta2.task_id = t2.id
+            AND ta2.assignee_id = tm.id AND ta2.assignee_type = 'team'
+          WHERE p2.status IN ('active', 'planning', 'on-hold')
+            AND NOT (p2.end_date IS NOT NULL AND p2.end_date < CURDATE()
+                     AND p2.status NOT IN ('completed', 'cancelled'))
+        ) as active_project_names
       FROM team_members tm
       LEFT JOIN team_member_skills tms ON tm.id = tms.team_member_id
       LEFT JOIN skills s ON tms.skill_id = s.id
@@ -494,7 +515,7 @@ const getAllTeamMembers = async (req, res) => {
       LEFT JOIN task_assignees ta ON tm.id = ta.assignee_id AND ta.assignee_type = 'team'
       LEFT JOIN team_members_teams tmt ON tm.id = tmt.team_member_id AND tmt.is_active = 1
       LEFT JOIN teams t ON tmt.team_id = t.id AND t.is_active = 1
-      WHERE tm.is_active = true
+      ${includeInactive ? '' : 'WHERE tm.is_active = true'}
       GROUP BY tm.id
       ORDER BY tm.name
     `);
@@ -513,9 +534,12 @@ const getAllTeamMembers = async (req, res) => {
           yellow: parseInt(member.yellow_flags) || 0,
           green: parseInt(member.green_flags) || 0
         },
-        task_count: parseInt(member.task_count) || 0
+        task_count: parseInt(member.task_count) || 0,
+        active_project_count: parseInt(member.active_project_count) || 0,
+        active_project_names: member.active_project_names
+          ? member.active_project_names.split('||').filter(Boolean)
+          : []
       };
-      
       
       return formattedMember;
     });
@@ -1611,6 +1635,99 @@ const createSampleData = async (req, res) => {
   }
 };
 
+// Get projects for a specific team member grouped by status (active, completed, overdue)
+const getTeamMemberProjects = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify member exists
+    const memberRows = await db.query(
+      'SELECT id, name FROM team_members WHERE id = ? AND is_active = true',
+      [id]
+    );
+    if (memberRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { message: 'Team member not found' }
+      });
+    }
+
+    // Fetch all projects the member is involved in (via task assignments or project membership)
+    const projectRows = await db.query(`
+      SELECT DISTINCT
+        p.id,
+        p.name,
+        p.status,
+        p.start_date,
+        p.end_date,
+        ROUND(COALESCE(AVG(t_all.progress), 0), 1) AS progress,
+        COUNT(DISTINCT t_member.id) AS member_task_count,
+        SUM(t_member.status = 'completed') AS completed_member_tasks,
+        SUM(t_member.status NOT IN ('completed', 'skipped')) AS active_member_tasks,
+        SUM(
+          t_member.end_date < CURDATE() AND t_member.status NOT IN ('completed', 'skipped')
+        ) AS overdue_member_tasks
+      FROM projects p
+      LEFT JOIN tasks t_all ON t_all.project_id = p.id
+      INNER JOIN tasks t_member ON t_member.project_id = p.id
+      INNER JOIN task_assignees ta ON ta.task_id = t_member.id
+        AND ta.assignee_id = ? AND ta.assignee_type = 'team'
+      GROUP BY p.id, p.name, p.status, p.start_date, p.end_date
+      ORDER BY
+        CASE p.status WHEN 'active' THEN 1 WHEN 'planning' THEN 2 WHEN 'on-hold' THEN 3 WHEN 'completed' THEN 4 ELSE 5 END,
+        p.name ASC
+    `, [id]);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const activeProjects = [];
+    const completedProjects = [];
+    const overdueProjects = [];
+
+    projectRows.forEach((p) => {
+      const endDate = p.end_date ? new Date(p.end_date) : null;
+      const isOverdue = endDate && endDate < today && !['completed', 'cancelled'].includes(p.status);
+
+      const formatted = {
+        id: p.id,
+        name: p.name,
+        status: p.status,
+        start_date: p.start_date,
+        end_date: p.end_date,
+        progress: p.progress,
+        member_task_count: p.member_task_count,
+        completed_member_tasks: p.completed_member_tasks,
+        active_member_tasks: p.active_member_tasks,
+        overdue_member_tasks: p.overdue_member_tasks,
+      };
+
+      if (p.status === 'completed') {
+        completedProjects.push(formatted);
+      } else if (isOverdue) {
+        overdueProjects.push(formatted);
+      } else if (['active', 'planning', 'on-hold'].includes(p.status)) {
+        activeProjects.push(formatted);
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        active: activeProjects,
+        completed: completedProjects,
+        overdue: overdueProjects,
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching team member projects:', error);
+    res.status(500).json({
+      success: false,
+      error: { message: 'Failed to fetch team member projects' }
+    });
+  }
+};
+
 module.exports = {
   // Team member functions (existing)
   authenticateTeamMember,
@@ -1638,5 +1755,8 @@ module.exports = {
   addMemberToTeam,
   removeMemberFromTeam,
   debugTeamMemberData,
-  createSampleData
+  createSampleData,
+
+  // Projects for a team member
+  getTeamMemberProjects,
 };

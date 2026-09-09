@@ -38,12 +38,14 @@ import {
   requestProjectTasksRefresh,
 } from '../utils/taskManagerCache';
 import { getTaskDisplayProgress } from '../utils/taskProgressDisplay';
+import { pickTaskUpdateStatus } from '../utils/taskStatusDisplay';
 import { CreateTaskModal } from './TaskManager';
 import { EditProjectModal } from './modals/EditProjectModal';
 import EducationalHierarchy from './EducationalHierarchy';
 import { TaskDetails } from './TaskDetails';
 import { apiService, projectService, teamService, taskService, skillService, stageService, categoryService, gradeService, bookService, unitService, lessonService, performanceFlagService } from '../services/apiService';
 import { FlagEmployeeModal } from './modals/FlagEmployeeModal';
+import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
 
 interface ProjectDetailsProps {
   project: Project;
@@ -1262,7 +1264,7 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
           description: taskData.description,
           project_id: parseInt(taskData.projectId || '1'),
           category_stage_id: parseInt(taskData.stageId || ''),
-          status: taskData.status,
+          ...pickTaskUpdateStatus(taskData.status),
           priority: taskData.priority,
           start_date: taskData.startDate,
           end_date: taskData.endDate,
@@ -1507,7 +1509,7 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
         {/* Bulk Selection Controls */}
         {projectTasks.length > 0 && (
           <div className="bg-white p-4 rounded-lg border border-gray-200">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center space-x-4">
                 <div className="flex items-center space-x-2">
                   <input
@@ -1548,15 +1550,19 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
               </div>
 
               {selectedTasks.size > 0 && (
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={() => setIsBulkDeleteModalOpen(true)}
-                  className="bg-red-600 hover:bg-red-700 text-white"
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Delete Selected ({selectedTasks.size})
-                </Button>
+                <BulkTaskSelectionActions
+                  selectedTaskIds={Array.from(selectedTasks)}
+                  selectedTaskNames={Array.from(selectedTasks).map((taskId) => {
+                    const task = projectTasks.find((t) => t.id.toString() === taskId);
+                    return task?.name || `Task ${taskId}`;
+                  })}
+                  teamMembers={teamMembers}
+                  onSuccess={async () => {
+                    setSelectedTasks(new Set());
+                    await refreshProjectTaskData();
+                  }}
+                  onDelete={() => setIsBulkDeleteModalOpen(true)}
+                />
               )}
             </div>
           </div>

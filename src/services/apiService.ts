@@ -241,8 +241,9 @@ export const teamService = {
     return result.data ?? result;
   },
 
-  getMembers: async (): Promise<any[]> => {
-    const result = await apiService.get('/team/members');
+  getMembers: async (includeInactive = false): Promise<any[]> => {
+    const url = includeInactive ? '/team/members?includeInactive=true' : '/team/members';
+    const result = await apiService.get(url);
     return result.data ?? result;
   },
 
@@ -336,6 +337,11 @@ export const teamService = {
 
   bulkUpdateMembersStatus: async (member_ids: number[], is_active: boolean): Promise<any> => {
     const result = await apiService.patch('/team/members/bulk/status', { member_ids, is_active });
+    return result.data ?? result;
+  },
+
+  getMemberProjects: async (memberId: number | string): Promise<{ active: any[]; completed: any[]; overdue: any[] }> => {
+    const result = await apiService.get(`/team/members/${memberId}/projects`);
     return result.data ?? result;
   },
 };
@@ -520,6 +526,37 @@ export const taskService = {
     return handleResponse(response);
   },
 
+  bulkUpdateStatus: async (
+    taskIds: (string | number)[],
+    status: 'on-hold' | 'in-progress' | 'not-started' | 'completed'
+  ): Promise<any> => {
+    const result = await apiService.patch('/tasks/bulk-status', { taskIds, status });
+    return result;
+  },
+
+  bulkReassign: async (data: {
+    taskIds: (string | number)[];
+    assignee_id: number;
+    assignee_type?: 'admin' | 'team';
+  }): Promise<any> => {
+    const result = await apiService.post('/tasks/bulk-reassign', data);
+    return result;
+  },
+
+  bulkUpdateDates: async (data: {
+    taskIds: (string | number)[];
+    start_date?: string;
+    end_date?: string;
+  }): Promise<any> => {
+    const result = await apiService.patch('/tasks/bulk-dates', data);
+    return result;
+  },
+
+  bulkApprove: async (taskIds: (string | number)[]): Promise<any> => {
+    const result = await apiService.post('/tasks/bulk-approve', { taskIds });
+    return result;
+  },
+
   bulkAssign: async (data: {
     assignee_id: number;
     assignee_type?: 'admin' | 'team';
@@ -622,6 +659,19 @@ export const taskService = {
   deleteRemark: async (remarkId: string | number): Promise<any> => {
     const result = await apiService.delete(`/tasks/remarks/${remarkId}`);
     return result.data ?? result;
+  },
+
+  /**
+   * GET /api/tasks/dashboard-summary
+   *
+   * Returns aggregated task counts only — never fetches full task records.
+   * Used by the Admin Kanban KPI cards.
+   */
+  getDashboardSummary: async (filters?: Record<string, string>): Promise<any> => {
+    const qs = filters ? new URLSearchParams(filters).toString() : '';
+    const endpoint = qs ? `/tasks/dashboard-summary?${qs}` : '/tasks/dashboard-summary';
+    const result = await apiService.get(endpoint);
+    return result?.data ?? result;
   },
 };
 
@@ -1216,6 +1266,81 @@ export const accessService = {
 
   getMyPermissions: async (): Promise<any> => {
     const result = await teamApiService.get('/access/my-permissions');
+    return result.data ?? result;
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin Audit Service
+// ─────────────────────────────────────────────────────────────────────────────
+export const adminAuditService = {
+  // Performance Flags Management
+  getAllPerformanceFlags: async (params?: {
+    teamMemberId?: string;
+    taskId?: string;
+    flagType?: string;
+    limit?: number;
+  }): Promise<any> => {
+    const queryString = params ? '?' + new URLSearchParams(
+      Object.entries(params).filter(([_, v]) => v != null).map(([k, v]) => [k, String(v)])
+    ).toString() : '';
+    const result = await apiService.get(`/admin-audit/flags${queryString}`);
+    return result.data ?? result;
+  },
+
+  deletePerformanceFlag: async (flagId: number): Promise<any> => {
+    return await apiService.delete(`/admin-audit/flags/${flagId}`);
+  },
+
+  bulkDeletePerformanceFlags: async (flagIds: number[]): Promise<any> => {
+    return await apiService.post('/admin-audit/flags/bulk-delete', { flagIds });
+  },
+
+  getFlagAuditLogs: async (params?: {
+    teamMemberId?: string;
+    taskId?: string;
+    flagType?: string;
+    limit?: number;
+  }): Promise<any> => {
+    const queryString = params ? '?' + new URLSearchParams(
+      Object.entries(params).filter(([_, v]) => v != null).map(([k, v]) => [k, String(v)])
+    ).toString() : '';
+    const result = await apiService.get(`/admin-audit/flags/audit-logs${queryString}`);
+    return result.data ?? result;
+  },
+
+  // Extension Requests Management
+  getAllExtensionRequests: async (params?: {
+    status?: string;
+    taskId?: string;
+    projectId?: string;
+    limit?: number;
+  }): Promise<any> => {
+    const queryString = params ? '?' + new URLSearchParams(
+      Object.entries(params).filter(([_, v]) => v != null).map(([k, v]) => [k, String(v)])
+    ).toString() : '';
+    const result = await apiService.get(`/admin-audit/extensions${queryString}`);
+    return result.data ?? result;
+  },
+
+  deleteExtensionRequest: async (extensionId: number): Promise<any> => {
+    return await apiService.delete(`/admin-audit/extensions/${extensionId}`);
+  },
+
+  bulkDeleteExtensionRequests: async (extensionIds: number[]): Promise<any> => {
+    return await apiService.post('/admin-audit/extensions/bulk-delete', { extensionIds });
+  },
+
+  getExtensionAuditLogs: async (params?: {
+    taskId?: string;
+    projectId?: string;
+    status?: string;
+    limit?: number;
+  }): Promise<any> => {
+    const queryString = params ? '?' + new URLSearchParams(
+      Object.entries(params).filter(([_, v]) => v != null).map(([k, v]) => [k, String(v)])
+    ).toString() : '';
+    const result = await apiService.get(`/admin-audit/extensions/audit-logs${queryString}`);
     return result.data ?? result;
   },
 };

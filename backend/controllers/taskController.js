@@ -5,6 +5,7 @@ const resubmissionDeadline = require('../services/resubmissionDeadlineService');
 const { assertTaskAccess, assertCanManageTasks, canManageTasks } = require('../utils/taskAccess');
 const { ensureTeamMembersOnProject } = require('../utils/projectMembership');
 const { emitProjectTaskUpdate } = require('../utils/emitProjectTaskUpdate');
+const taskSummaryCache = require('../services/taskSummaryCache');
 
 const TEAM_ASSIGNEE_UPDATE_FIELDS = new Set(['status', 'progress']);
 
@@ -515,6 +516,9 @@ const bulkCreateTasks = async (req, res) => {
       });
     }
 
+    // Invalidate dashboard summary cache — bulk tasks created
+    taskSummaryCache.invalidateAll();
+
     res.json({
       success: true,
       data: {
@@ -620,6 +624,9 @@ const createTask = async (req, res) => {
     const createdTask = await getTaskById(taskId);
     await recalculateProjectProgress(project_id);
     emitProjectTaskUpdate(project_id, taskId, 'created');
+
+    // Invalidate dashboard summary cache — counts have changed
+    taskSummaryCache.invalidateAll();
 
     res.status(201).json({ success: true, data: createdTask, message: 'Task created successfully' });
 
@@ -783,10 +790,13 @@ const updateTask = async (req, res) => {
         const task = updatedTask;
         notifyAssigneeTeams(req.user, id, {
           taskDetails: task?.title || task?.name || req.body.taskDetails || 'N/A',
+          taskDescription: task?.description || 'N/A',
+          task_description: task?.description || 'N/A',
           project: task?.project?.name || task?.project_name || req.body.project || 'N/A',
           status: req.body.status || status || 'N/A',
           serverLink: req.body.serverLocation || req.body.serverLink || server_location || 'N/A',
           remark: 'Status updated',
+          fileName: req.body.fileName || req.body.file_name || 'N/A',
           type: 'status_update',
         });
       }
@@ -794,6 +804,9 @@ const updateTask = async (req, res) => {
     // === END TEAMS NOTIFICATION ===
 
     emitProjectTaskUpdate(updatedTask?.project_id, id, 'updated');
+
+    // Invalidate dashboard summary cache — status/counts may have changed
+    taskSummaryCache.invalidateAll();
 
     res.json({ success: true, data: updatedTask, message: 'Task updated successfully' });
 
@@ -820,6 +833,10 @@ const deleteTask = async (req, res) => {
     await db.query('DELETE FROM tasks WHERE id = ?', [id]);
     await recalculateProjectProgress(existing[0].project_id);
     emitProjectTaskUpdate(existing[0].project_id, id, 'deleted');
+
+    // Invalidate dashboard summary cache
+    taskSummaryCache.invalidateAll();
+
     res.json({ success: true, message: 'Task deleted successfully' });
   } catch (error) {
     if (error.statusCode) {
@@ -866,6 +883,9 @@ const bulkDeleteTasks = async (req, res) => {
     await db.query(`DELETE FROM tasks WHERE id IN (${foundPlaceholders})`, foundIds);
     await Promise.all(projectIds.map(projectId => recalculateProjectProgress(projectId)));
     projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'deleted'));
+
+    // Invalidate dashboard summary cache
+    taskSummaryCache.invalidateAll();
 
     const notFoundIds = numericIds.filter(id => !foundIds.includes(id));
 
@@ -1025,7 +1045,7 @@ const addTaskRemark = async (req, res) => {
 
     await assertTaskAccess(id, req.user);
 
-    const taskRow = await db.queryFirst('SELECT id, status, project_id, name FROM tasks WHERE id = ?', [id]);
+    const taskRow = await db.queryFirst('SELECT id, status, project_id, name, description FROM tasks WHERE id = ?', [id]);
     if (!taskRow) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Task not found' } });
     if (added_by_type === 'team' && taskRow.status === 'on-hold') {
       return res.status(403).json({
@@ -1046,8 +1066,17 @@ const addTaskRemark = async (req, res) => {
       );
       insertId = insertResult.insertId;
 
-      if (remark_type === 'complete' || remark_type === 'skipped') {
-        newStatus = remark_type === 'complete' ? 'under-review' : 'skipped';
+      // complete → under-review; skipped → skipped;
+      // general ("General / In Progress") promotes not-started → in-progress (50%)
+      if (remark_type === 'complete') {
+        newStatus = 'under-review';
+      } else if (remark_type === 'skipped') {
+        newStatus = 'skipped';
+      } else if (remark_type === 'general' && previousStatus === 'not-started') {
+        newStatus = 'in-progress';
+      }
+
+      if (newStatus !== previousStatus) {
         const newProgress = calculateTaskProgress(newStatus);
         await conn.execute(
           'UPDATE tasks SET status = ?, progress = ?, updated_at = NOW() WHERE id = ?',
@@ -1066,8 +1095,9 @@ const addTaskRemark = async (req, res) => {
       );
     });
 
-    if (remark_type === 'complete' || remark_type === 'skipped') {
+    if (newStatus !== previousStatus) {
       if (taskRow.project_id) await recalculateProjectProgress(taskRow.project_id);
+      taskSummaryCache.invalidateAll();
     }
 
     if (global.notificationServer) {
@@ -1119,8 +1149,11 @@ const addTaskRemark = async (req, res) => {
         const teamsBase = {
           project: req.body.project || task?.project?.name || 'N/A',
           taskDetails: req.body.taskDetails || task?.title || task?.name || 'N/A',
+          taskDescription: task?.description || 'N/A',
+          task_description: task?.description || 'N/A',
           serverLink: req.body.serverLocation || req.body.serverLink || server_location || 'N/A',
           remark: req.body.remarkContent || req.body.remark || remark || 'N/A',
+          fileName: req.body.fileName || req.body.file_name || 'N/A',
         };
 
         const isSubmissionRemark = remark_type === 'complete' || remark_type === 'skipped';
@@ -1144,8 +1177,21 @@ const addTaskRemark = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: { id: insertId, task_id: id, remark, remark_date: formattedRemarkDate, remark_type, is_private },
-      message: 'Remark added successfully',
+      data: {
+        id: insertId,
+        task_id: id,
+        remark,
+        remark_date: formattedRemarkDate,
+        remark_type,
+        is_private,
+        previous_status: previousStatus,
+        status: newStatus,
+        progress: calculateTaskProgress(newStatus) ?? 0,
+      },
+      message:
+        newStatus !== previousStatus && newStatus === 'in-progress'
+          ? 'Remark added and task marked as In Progress'
+          : 'Remark added successfully',
     });
   } catch (error) {
     if (error.statusCode) {
@@ -1219,6 +1265,13 @@ const deleteTaskRemark = async (req, res) => {
 // Get notifications for admin dashboard
 const getNotifications = async (req, res) => {
   try {
+    if (req.user?.type !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+
     const [extensions, remarks] = await Promise.all([
       db.query(`
         SELECT te.id, te.task_id, te.requested_by, te.requested_by_type, te.current_due_date, te.requested_due_date, te.reason, te.status, te.created_at,
@@ -1434,6 +1487,9 @@ const reviewTaskCompletion = async (req, res) => {
     }
 
     emitProjectTaskUpdate(tasks[0].project_id, taskId, 'updated');
+
+    // Invalidate dashboard summary cache — status changed (under-review → completed/returned)
+    taskSummaryCache.invalidateAll();
 
     const remaining = savedResubmissionDeadline
       ? resubmissionDeadline.formatRemainingTime(savedResubmissionDeadline)
@@ -1808,11 +1864,443 @@ const bulkAssignTasks = async (req, res) => {
   }
 };
 
+const BULK_STATUS_ALLOWED = new Set(['on-hold', 'in-progress', 'not-started', 'completed']);
+const BULK_ACTION_MAX_TASKS = 500;
+
+function parseBulkTaskIds(taskIds) {
+  if (!Array.isArray(taskIds) || taskIds.length === 0) {
+    return { error: { status: 400, code: 'INVALID_INPUT', message: 'Task IDs array is required and must not be empty' } };
+  }
+  const numericIds = [...new Set(
+    taskIds.map((id) => parseInt(id, 10)).filter((id) => !isNaN(id) && id > 0)
+  )];
+  if (numericIds.length === 0) {
+    return { error: { status: 400, code: 'INVALID_INPUT', message: 'No valid task IDs provided' } };
+  }
+  if (numericIds.length > BULK_ACTION_MAX_TASKS) {
+    return {
+      error: {
+        status: 400,
+        code: 'INVALID_INPUT',
+        message: `Cannot update more than ${BULK_ACTION_MAX_TASKS} tasks at once`,
+      },
+    };
+  }
+  return { numericIds };
+}
+
+function sendBulkActionError(res, error) {
+  if (error.statusCode) {
+    return res.status(error.statusCode).json({
+      success: false,
+      error: { code: error.code || 'FORBIDDEN', message: error.message },
+    });
+  }
+  return null;
+}
+
+// PATCH /api/tasks/bulk-status
+// Body: { taskIds, status } — status is one of on-hold | in-progress | not-started
+const bulkUpdateTaskStatus = async (req, res) => {
+  try {
+    assertCanManageTasks(req.user);
+    const { taskIds, status } = req.body;
+
+    if (!BULK_STATUS_ALLOWED.has(status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_INPUT',
+          message: 'Status must be one of: on-hold, in-progress, not-started, completed',
+        },
+      });
+    }
+
+    const parsed = parseBulkTaskIds(taskIds);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({
+        success: false,
+        error: { code: parsed.error.code, message: parsed.error.message },
+      });
+    }
+    const { numericIds } = parsed;
+    const placeholders = numericIds.map(() => '?').join(',');
+    const existing = await db.query(
+      `SELECT id, status, project_id FROM tasks WHERE id IN (${placeholders})`,
+      numericIds
+    );
+
+    if (existing.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) updated (tasks may have already been removed)',
+        updatedCount: 0,
+        skippedCount: 0,
+      });
+    }
+
+    const toUpdate = existing.filter((task) => task.status !== status);
+    const skippedCount = existing.length - toUpdate.length;
+
+    if (toUpdate.length === 0) {
+      return res.json({
+        success: true,
+        message: `All selected task(s) already have status "${status}"`,
+        updatedCount: 0,
+        skippedCount,
+      });
+    }
+
+    const updateIds = toUpdate.map((task) => task.id);
+    const updatePlaceholders = updateIds.map(() => '?').join(',');
+    const progressForStatus = calculateTaskProgress(status);
+
+    if (progressForStatus === null) {
+      await db.query(
+        `UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${updatePlaceholders})`,
+        [status, ...updateIds]
+      );
+    } else {
+      await db.query(
+        `UPDATE tasks SET status = ?, progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${updatePlaceholders})`,
+        [status, progressForStatus, ...updateIds]
+      );
+    }
+
+    for (const task of toUpdate) {
+      try {
+        await remarkHistory.logStatusChange(req.user, Number(task.id), task.status, status);
+      } catch (historyError) {
+        console.error('Bulk status history error:', historyError);
+      }
+    }
+
+    const projectIds = [...new Set(toUpdate.map((task) => task.project_id).filter(Boolean))];
+    await Promise.all(projectIds.map((projectId) => recalculateProjectProgress(projectId)));
+    projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'updated'));
+    taskSummaryCache.invalidateAll();
+
+    res.json({
+      success: true,
+      message: `${toUpdate.length} task(s) updated to ${status}`,
+      updatedCount: toUpdate.length,
+      skippedCount,
+      affectedProjects: projectIds.length,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk update task status error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to update task status' },
+    });
+  }
+};
+
+// POST /api/tasks/bulk-reassign
+// Replaces current assignees on the selected tasks with a single assignee.
+const bulkReassignTasks = async (req, res) => {
+  try {
+    assertCanManageTasks(req.user);
+    const { taskIds, assignee_id, assignee_type } = req.body;
+
+    if (!assignee_id) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'assignee_id is required' },
+      });
+    }
+
+    const parsed = parseBulkTaskIds(taskIds);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({
+        success: false,
+        error: { code: parsed.error.code, message: parsed.error.message },
+      });
+    }
+    const { numericIds } = parsed;
+
+    const table = assignee_type === 'admin' ? 'admin_users' : 'team_members';
+    const assigneeRows = await db.query(`SELECT id FROM ${table} WHERE id = ?`, [assignee_id]);
+    if (assigneeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Assignee not found in ${table}` },
+      });
+    }
+    const resolvedType = assignee_type === 'admin' ? 'admin' : 'team';
+
+    const conn = await db.getPool().getConnection();
+    let result = { foundIds: [], projectIds: [] };
+    try {
+      await conn.beginTransaction();
+      const placeholders = numericIds.map(() => '?').join(',');
+      const [existing] = await conn.query(
+        `SELECT id, project_id FROM tasks WHERE id IN (${placeholders})`,
+        numericIds
+      );
+
+      if (existing && existing.length > 0) {
+        const foundIds = existing.map((task) => task.id);
+        const foundPlaceholders = foundIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM task_assignees WHERE task_id IN (${foundPlaceholders})`,
+          foundIds
+        );
+
+        const insertPlaceholders = foundIds.map(() => '(?, ?, ?)').join(',');
+        const insertParams = foundIds.flatMap((taskId) => [taskId, assignee_id, resolvedType]);
+        await conn.query(
+          `INSERT INTO task_assignees (task_id, assignee_id, assignee_type) VALUES ${insertPlaceholders}`,
+          insertParams
+        );
+
+        result = {
+          foundIds,
+          projectIds: [...new Set(existing.map((task) => task.project_id).filter(Boolean))],
+        };
+      }
+
+      await conn.commit();
+    } catch (txError) {
+      await conn.rollback();
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    if (result.foundIds.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) reassigned (tasks may have already been removed)',
+        reassignedCount: 0,
+      });
+    }
+
+    if (resolvedType === 'team') {
+      for (const projectId of result.projectIds) {
+        try {
+          await ensureTeamMembersOnProject(projectId, [assignee_id]);
+        } catch (membershipError) {
+          console.error('Failed to add bulk reassign member to project team:', membershipError);
+        }
+      }
+    }
+
+    result.projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'assigned'));
+    taskSummaryCache.invalidateAll();
+
+    res.json({
+      success: true,
+      message: `${result.foundIds.length} task(s) reassigned successfully`,
+      reassignedCount: result.foundIds.length,
+      affectedProjects: result.projectIds.length,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk reassign tasks error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to reassign tasks' },
+    });
+  }
+};
+
+// PATCH /api/tasks/bulk-dates
+// Body: { taskIds, start_date?, end_date? } — at least one date required
+const bulkUpdateTaskDates = async (req, res) => {
+  try {
+    assertCanManageTasks(req.user);
+    const { taskIds, start_date, end_date } = req.body;
+    const hasStart = start_date !== undefined && start_date !== null && String(start_date).trim() !== '';
+    const hasEnd = end_date !== undefined && end_date !== null && String(end_date).trim() !== '';
+
+    if (!hasStart && !hasEnd) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'Provide start_date, end_date, or both' },
+      });
+    }
+
+    const formattedStart = hasStart ? formatDateIST(start_date) : null;
+    const formattedEnd = hasEnd ? formatDateIST(end_date) : null;
+    if (hasStart && !formattedStart) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'start_date must be a valid date' },
+      });
+    }
+    if (hasEnd && !formattedEnd) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'end_date must be a valid date' },
+      });
+    }
+    if (hasStart && hasEnd && formattedEnd < formattedStart) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'Due date must be on or after start date' },
+      });
+    }
+
+    const parsed = parseBulkTaskIds(taskIds);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({
+        success: false,
+        error: { code: parsed.error.code, message: parsed.error.message },
+      });
+    }
+    const { numericIds } = parsed;
+    const placeholders = numericIds.map(() => '?').join(',');
+    const existing = await db.query(
+      `SELECT id, project_id FROM tasks WHERE id IN (${placeholders})`,
+      numericIds
+    );
+
+    if (existing.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) updated (tasks may have already been removed)',
+        updatedCount: 0,
+      });
+    }
+
+    const foundIds = existing.map((task) => task.id);
+    const foundPlaceholders = foundIds.map(() => '?').join(',');
+    let updateQuery = 'UPDATE tasks SET updated_at = CURRENT_TIMESTAMP';
+    const updateParams = [];
+    if (hasStart) {
+      updateQuery += ', start_date = ?';
+      updateParams.push(formattedStart);
+    }
+    if (hasEnd) {
+      updateQuery += ', end_date = ?';
+      updateParams.push(formattedEnd);
+    }
+    updateQuery += ` WHERE id IN (${foundPlaceholders})`;
+    await db.query(updateQuery, [...updateParams, ...foundIds]);
+
+    const projectIds = [...new Set(existing.map((task) => task.project_id).filter(Boolean))];
+    projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'updated'));
+    taskSummaryCache.invalidateAll();
+
+    res.json({
+      success: true,
+      message: `${foundIds.length} task(s) dates updated`,
+      updatedCount: foundIds.length,
+      affectedProjects: projectIds.length,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk update task dates error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to update task dates' },
+    });
+  }
+};
+
+const BULK_APPROVE_STATUSES = new Set(['under-review', 'resubmitted', 'submitted']);
+
+// POST /api/tasks/bulk-approve
+// Approves selected tasks that are under review; others are skipped.
+const bulkApproveTasks = async (req, res) => {
+  try {
+    assertCanManageTasks(req.user);
+    const parsed = parseBulkTaskIds(req.body.taskIds);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({
+        success: false,
+        error: { code: parsed.error.code, message: parsed.error.message },
+      });
+    }
+    const { numericIds } = parsed;
+    const placeholders = numericIds.map(() => '?').join(',');
+    const existing = await db.query(
+      `SELECT id, status, project_id FROM tasks WHERE id IN (${placeholders})`,
+      numericIds
+    );
+
+    if (existing.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) approved (tasks may have already been removed)',
+        approvedCount: 0,
+        skippedCount: 0,
+      });
+    }
+
+    const toApprove = existing.filter((task) => BULK_APPROVE_STATUSES.has(task.status));
+    const skippedCount = existing.length - toApprove.length;
+
+    if (toApprove.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No selected tasks are under review',
+        approvedCount: 0,
+        skippedCount,
+      });
+    }
+
+    const approveIds = toApprove.map((task) => task.id);
+    const approvePlaceholders = approveIds.map(() => '?').join(',');
+    const completedProgress = calculateTaskProgress('completed') ?? 100;
+
+    const conn = await db.getPool().getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query(
+        `UPDATE tasks SET status = ?, progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${approvePlaceholders})`,
+        ['completed', completedProgress, ...approveIds]
+      );
+      for (const task of toApprove) {
+        await reworkService.resetRework(conn, task.id);
+        await remarkHistory.logReview(
+          req.user,
+          Number(task.id),
+          'approve',
+          null,
+          task.status,
+          'completed',
+          conn
+        );
+      }
+      await conn.commit();
+    } catch (txError) {
+      await conn.rollback();
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    const projectIds = [...new Set(toApprove.map((task) => task.project_id).filter(Boolean))];
+    await Promise.all(projectIds.map((projectId) => recalculateProjectProgress(projectId)));
+    projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'updated'));
+    taskSummaryCache.invalidateAll();
+
+    res.json({
+      success: true,
+      message: `${toApprove.length} task(s) approved`,
+      approvedCount: toApprove.length,
+      skippedCount,
+      affectedProjects: projectIds.length,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk approve tasks error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to approve tasks' },
+    });
+  }
+};
+
 module.exports = {
   getTasks, getTask, createTask, updateTask, deleteTask, bulkDeleteTasks,
   testStageFilter, getBulkCreatePreview, bulkCreateTasks,
   requestTaskExtension, getTaskExtensions, reviewExtensionRequest,
   addTaskRemark, getTaskRemarks, getTaskRemarksHistory, deleteTaskRemark,
   getNotifications, getTeamNotifications, reviewTaskCompletion,
-  bulkUploadTasks, bulkAssignTasks,
+  bulkUploadTasks, bulkAssignTasks, bulkUpdateTaskStatus, bulkReassignTasks,
+  bulkUpdateTaskDates, bulkApproveTasks,
 };

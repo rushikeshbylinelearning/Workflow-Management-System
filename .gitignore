@@ -41,4 +41,11 @@ node_modules/
 backend/.env  
 frontend/.env  
 .htaccess
-  
+
+
+ # Ignore all zip/tar archives
+*.zip
+*.tar
+*.gz
+*.7z
+*.rar 

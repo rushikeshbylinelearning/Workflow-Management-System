@@ -12,7 +12,7 @@ const https = require('https');
 
 /** Shared hosting often has broken IPv6 — curl works (IPv4) while Node times out on IPv6 first. */
 function createWebhookHttpsAgent() {
-  if (process.env.TEAMS_WEBHOOK_FORCE_IPV4 === 'false') return undefinACed;
+  if (process.env.TEAMS_WEBHOOK_FORCE_IPV4 === 'false') return undefined;
   return new https.Agent({ family: 4, keepAlive: true });
 }
 
@@ -29,9 +29,12 @@ async function postToTeams(webhookUrl, payload) {
       task_id: payload?.task_id ?? payload?.taskId ?? null,
       project: payload?.project || 'N/A',
       taskDetails: payload?.taskDetails || 'N/A',
+      taskDescription: payload?.taskDescription ?? payload?.task_description ?? 'N/A',
+      task_description: payload?.task_description ?? payload?.taskDescription ?? 'N/A',
       status: payload?.status || 'N/A',
       serverLink: payload?.serverLink || 'N/A',
       remark: payload?.remark || 'N/A',
+      fileName: payload?.fileName || 'N/A',
       type: payload?.type || 'remark',
       imageUrl: payload?.imageUrl || null,
       ...payload,

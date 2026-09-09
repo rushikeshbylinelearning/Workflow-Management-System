@@ -24,7 +24,7 @@ const navigation = [
   { name: 'Top Performers', icon: Trophy, key: 'top-performers' },
   { name: 'Analytics', icon: BarChart3, key: 'analytics' },
   { name: 'Core Analytics', icon: TrendingUp, key: 'core-analytics' },
-  { name: 'Manage Activities', icon: Bell, key: 'notifications' },
+  { name: 'Manage Extensions', icon: Bell, key: 'notifications' },
   { name: 'Settings', icon: Settings, key: 'settings' },
 ];
 

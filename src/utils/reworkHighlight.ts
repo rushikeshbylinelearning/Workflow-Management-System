@@ -8,8 +8,14 @@ export const REWORK_ACTIVE_STATUSES = new Set([
   'returned',
   'redo-requested',
   'resubmitted',
+  'under-review', // included for backwards compatibility
 ]);
 
+/** Active task statuses for dashboard list view.
+ *  Note: 'under-review' and 'resubmitted' are submitted tasks and should
+ *  technically go to "Under Review", but this set is used by legacy list
+ *  views that may still rely on it. The Kanban view uses taskClassifier.ts
+ *  which properly separates submitted tasks. */
 export const ACTIVE_TASK_STATUSES = new Set([
   'not-started',
   'in-progress',
@@ -51,9 +57,12 @@ export function isActiveTaskForDashboard(task: Task): boolean {
   return ACTIVE_TASK_STATUSES.has(status);
 }
 
-/** Overdue sidebar: informational only; exclude rework-returned and on-hold tasks. */
+/** Overdue sidebar: informational only; exclude submitted, rework-returned and on-hold tasks. */
 export function belongsInOverdueSection(task: Task, isOverdue: (t: Task) => boolean): boolean {
   if (isOnHoldTask(task)) return false;
+  const status = normalizeTaskStatus(task.status);
+  // Submitted tasks (pending admin/PM approval) must never appear in overdue
+  if (status === 'under-review' || status === 'resubmitted') return false;
   if (getTaskReworkCount(task) > 0 && isReworkActiveStatus(task.status)) return false;
   return isOverdue(task) && (task.progress ?? 0) > 0;
 }

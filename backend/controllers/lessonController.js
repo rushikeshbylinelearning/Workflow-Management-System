@@ -1,4 +1,5 @@
 const db = require('../db');
+const { getLessonUsage, blockedMessage } = require('../utils/hierarchyDeleteGuard');
 
 // Get all lessons for a unit
 const getLessonsByUnit = async (req, res) => {
@@ -256,6 +257,15 @@ const deleteLesson = async (req, res) => {
       });
     }
     
+    const usage = await getLessonUsage(id);
+    const blocked = blockedMessage('lesson', usage);
+    if (blocked) {
+      return res.status(400).json({
+        success: false,
+        error: { message: blocked }
+      });
+    }
+
     await db.execute('DELETE FROM lessons WHERE id = ?', [id]);
     
     res.json({

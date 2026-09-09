@@ -325,9 +325,9 @@ export function TeamNotifications({ onBack }: TeamNotificationsProps) {
                   <Bell className="w-6 h-6 text-blue-600" />
                 </div>
                 <div>
-                  <h1 className="text-2xl font-bold text-gray-900">My Notifications</h1>
+                  <h1 className="text-2xl font-bold text-gray-900">Extension Management</h1>
                   <p className="text-gray-600">
-                    {totalNotifications} notification{totalNotifications !== 1 ? 's' : ''}
+                    {totalNotifications} Extension{totalNotifications !== 1 ? 's' : ''}
                   </p>
                 </div>
               </div>

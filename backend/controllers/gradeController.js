@@ -1,4 +1,10 @@
           const db = require('../db');
+          const {
+            getGradeUsage,
+            blockedMessage,
+            withTransaction,
+            cascadeDeleteGrade
+          } = require('../utils/hierarchyDeleteGuard');
 
           // Get all grades for a project
           const getGradesByProject = async (req, res) => {
@@ -287,18 +293,20 @@
                 });
               }
               
-              // Check if grade has books (cascade will handle the rest)
-              const books = await db.query('SELECT COUNT(*) as count FROM books WHERE grade_id = ?', [id]);
-              if (books[0].count > 0) {
+              const usage = await getGradeUsage(id);
+              const blocked = blockedMessage('grade', usage);
+              if (blocked) {
                 return res.status(400).json({
                   success: false,
                   error: {
-                    message: 'Cannot delete grade with existing books. Please delete books first.'
+                    message: blocked
                   }
                 });
               }
-              
-              await db.execute('DELETE FROM grades WHERE id = ?', [id]);
+
+              await withTransaction(async (conn) => {
+                await cascadeDeleteGrade(conn, id);
+              });
               
               res.json({
                 success: true,

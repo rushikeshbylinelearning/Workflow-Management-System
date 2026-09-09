@@ -1,4 +1,10 @@
 const db = require('../db');
+const {
+  getUnitUsage,
+  blockedMessage,
+  withTransaction,
+  cascadeDeleteUnit
+} = require('../utils/hierarchyDeleteGuard');
 
 // Get all units for a book
 const getUnitsByBook = async (req, res) => {
@@ -256,16 +262,18 @@ const deleteUnit = async (req, res) => {
       });
     }
     
-    // Check if unit has lessons
-    const lessons = await db.query('SELECT COUNT(*) as count FROM lessons WHERE unit_id = ?', [id]);
-    if (lessons[0].count > 0) {
+    const usage = await getUnitUsage(id);
+    const blocked = blockedMessage('unit', usage);
+    if (blocked) {
       return res.status(400).json({
         success: false,
-        error: { message: 'Cannot delete unit with existing lessons. Please delete lessons first.' }
+        error: { message: blocked }
       });
     }
-    
-    await db.execute('DELETE FROM units WHERE id = ?', [id]);
+
+    await withTransaction(async (conn) => {
+      await cascadeDeleteUnit(conn, id);
+    });
     
     res.json({
       success: true,

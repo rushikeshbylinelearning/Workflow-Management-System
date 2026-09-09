@@ -24,6 +24,10 @@ const {
   bulkCreateTasks,
   bulkUploadTasks,
   bulkAssignTasks,
+  bulkUpdateTaskStatus,
+  bulkReassignTasks,
+  bulkUpdateTaskDates,
+  bulkApproveTasks,
   // Extension endpoints
   requestTaskExtension,
   getTaskExtensions,
@@ -37,6 +41,7 @@ const {
   reviewTaskCompletion,
   getTaskRemarksHistory,
 } = require('../controllers/taskController');
+const { getDashboardSummary } = require('../controllers/taskSummaryController');
 const { exportTasks, exportSelectedTasks } = require('../controllers/taskExportController');
 const {
   startTaskTimer,
@@ -53,6 +58,11 @@ const {
   REMARK_MAX_PLAIN_LENGTH,
   REMARK_MAX_HTML_LENGTH,
 } = require('../utils/sanitizeRemark');
+
+const TASK_ROUTE_STATUSES = [
+  'not-started', 'in-progress', 'under-review', 'completed', 'blocked', 'skipped', 'on-hold',
+  'returned', 'redo-requested', 'resubmitted',
+];
 
 // Validation middleware
 const handleValidationErrors = (req, res, next) => {
@@ -95,8 +105,8 @@ const taskValidation = [
   
   body('status')
     .optional()
-    .isIn(['not-started', 'in-progress', 'under-review', 'completed', 'blocked', 'skipped', 'on-hold'])
-    .withMessage('Status must be one of: not-started, in-progress, under-review, completed, blocked, skipped, on-hold'),
+    .isIn(TASK_ROUTE_STATUSES)
+    .withMessage(`Status must be one of: ${TASK_ROUTE_STATUSES.join(', ')}`),
   
   body('priority')
     .optional()
@@ -170,8 +180,8 @@ const taskUpdateValidation = [
   
   body('status')
     .optional()
-    .isIn(['not-started', 'in-progress', 'under-review', 'completed', 'blocked', 'skipped', 'on-hold'])
-    .withMessage('Status must be one of: not-started, in-progress, under-review, completed, blocked, skipped, on-hold'),
+    .isIn(TASK_ROUTE_STATUSES)
+    .withMessage(`Status must be one of: ${TASK_ROUTE_STATUSES.join(', ')}`),
   
   body('priority')
     .optional()
@@ -270,8 +280,8 @@ const queryValidation = [
   
   query('status')
     .optional()
-    .isIn(['not-started', 'in-progress', 'under-review', 'completed', 'blocked', 'skipped', 'on-hold'])
-    .withMessage('Status must be one of: not-started, in-progress, under-review, completed, blocked, skipped, on-hold'),
+    .isIn(TASK_ROUTE_STATUSES)
+    .withMessage(`Status must be one of: ${TASK_ROUTE_STATUSES.join(', ')}`),
   
   query('priority')
     .optional()
@@ -306,6 +316,12 @@ const queryValidation = [
 ];
 
 // Routes
+
+// =====================================================
+// DASHBOARD SUMMARY — single aggregated query, no full task list
+// =====================================================
+// Must be registered BEFORE /:id so the path is not treated as an ID param.
+router.get('/dashboard-summary', requireAuth, getDashboardSummary);
 
 // Test stage filter endpoint
 router.get('/test/stage-filter', testStageFilter);
@@ -432,6 +448,84 @@ router.put('/:id',
   taskUpdateValidation,
   handleValidationErrors,
   updateTask
+);
+
+// Bulk status update — defined before /:id routes
+router.patch('/bulk-status',
+  requireAdminOrPMAuth,
+  [
+    body('taskIds')
+      .isArray({ min: 1, max: 500 })
+      .withMessage('Task IDs must be a non-empty array of at most 500 items'),
+    body('taskIds.*')
+      .isInt({ min: 1 })
+      .withMessage('Each task ID must be a positive integer'),
+    body('status')
+      .isIn(['on-hold', 'in-progress', 'not-started', 'completed'])
+      .withMessage('Status must be one of: on-hold, in-progress, not-started, completed'),
+  ],
+  handleValidationErrors,
+  bulkUpdateTaskStatus
+);
+
+// Bulk reassign — replaces assignees on selected tasks
+router.post('/bulk-reassign',
+  requireAdminOrPMAuth,
+  [
+    body('taskIds')
+      .isArray({ min: 1, max: 500 })
+      .withMessage('Task IDs must be a non-empty array of at most 500 items'),
+    body('taskIds.*')
+      .isInt({ min: 1 })
+      .withMessage('Each task ID must be a positive integer'),
+    body('assignee_id')
+      .isInt({ min: 1 })
+      .withMessage('assignee_id must be a positive integer'),
+    body('assignee_type')
+      .optional()
+      .isIn(['admin', 'team'])
+      .withMessage('assignee_type must be "admin" or "team"'),
+  ],
+  handleValidationErrors,
+  bulkReassignTasks
+);
+
+// Bulk start / due date update
+router.patch('/bulk-dates',
+  requireAdminOrPMAuth,
+  [
+    body('taskIds')
+      .isArray({ min: 1, max: 500 })
+      .withMessage('Task IDs must be a non-empty array of at most 500 items'),
+    body('taskIds.*')
+      .isInt({ min: 1 })
+      .withMessage('Each task ID must be a positive integer'),
+    body('start_date')
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601()
+      .withMessage('start_date must be a valid date'),
+    body('end_date')
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601()
+      .withMessage('end_date must be a valid date'),
+  ],
+  handleValidationErrors,
+  bulkUpdateTaskDates
+);
+
+// Bulk approve — under-review tasks only
+router.post('/bulk-approve',
+  requireAdminOrPMAuth,
+  [
+    body('taskIds')
+      .isArray({ min: 1, max: 500 })
+      .withMessage('Task IDs must be a non-empty array of at most 500 items'),
+    body('taskIds.*')
+      .isInt({ min: 1 })
+      .withMessage('Each task ID must be a positive integer'),
+  ],
+  handleValidationErrors,
+  bulkApproveTasks
 );
 
 // Bulk assign tasks (assign unassigned tasks to a team member)

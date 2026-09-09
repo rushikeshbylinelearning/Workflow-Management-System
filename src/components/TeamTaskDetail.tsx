@@ -201,12 +201,13 @@ export function TeamTaskDetail({ task, onBack, onTaskUpdate }: TeamTaskDetailPro
           return;
         }
 
+        const promotesToInProgress = remarkType === 'general' && task.status === 'not-started';
         setOptimisticTimelineEntry(
           buildOptimisticTimelineEntry({
             user: 'You',
             role: 'Assignee',
-            action: remarkType === 'complete' ? 'Submitted' : 'Remark Added',
-            action_type: remarkType === 'complete' ? 'submitted' : 'remark_added',
+            action: remarkType === 'complete' ? 'Submitted' : promotesToInProgress ? 'Status Updated' : 'Remark Added',
+            action_type: remarkType === 'complete' ? 'submitted' : promotesToInProgress ? 'status_updated' : 'remark_added',
             remark: remarkContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
           })
         );
@@ -223,6 +224,8 @@ export function TeamTaskDetail({ task, onBack, onTaskUpdate }: TeamTaskDetailPro
           showToast(`Task "${task.name}" has been submitted for review with completion remark!`, 'success');
         } else if (remarkType === 'skipped') {
           showToast(`Task "${task.name}" has been marked as skipped!`, 'success');
+        } else if (promotesToInProgress) {
+          showToast(`Task "${task.name}" marked as In Progress (50%).`, 'success');
         } else {
           showToast('Remark added successfully!', 'success');
         }
@@ -884,6 +887,13 @@ export function TeamTaskDetail({ task, onBack, onTaskUpdate }: TeamTaskDetailPro
               <option value="skipped">Skipped</option>
               <option value="other">Other</option>
             </select>
+            {remarkType === 'general' && task.status === 'not-started' && (
+              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  <strong>Note:</strong> This will mark the task as In Progress and set progress to 50%.
+                </p>
+              </div>
+            )}
             {remarkType === 'complete' && (
               <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <div className="flex items-center space-x-2">

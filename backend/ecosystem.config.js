@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'workflow-backend',
     script: './server.js',
-    cwd: '/home/legatolx/public_html/backend',
+    cwd: '/home/bylinelm/workflow.bylinelms.com/backend',
     instances: 1,
     exec_mode: 'fork',
     watch: false,

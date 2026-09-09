@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Modal } from './ui/Modal';
-import { Plus, Edit, Trash2, BookOpen, GraduationCap, Layers, FileText, ChevronDown, ChevronRight, Upload } from 'lucide-react';
+import { Plus, Edit, Trash2, BookOpen, GraduationCap, Layers, FileText, ChevronDown, ChevronRight, Upload, X } from 'lucide-react';
 import BulkUploadHierarchyModal from './BulkUploadHierarchyModal';
 
 interface Grade {
@@ -174,10 +174,11 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
   };
 
   const handleDeleteGrade = async (gradeId: number) => {
-    if (!confirm('Are you sure you want to delete this grade? This will also delete all associated books, units, and lessons.')) {
+    if (!confirm('Delete this grade? Unused books, units, and lessons under it will also be removed. Deletion is blocked if this grade is assigned to any tasks or team members.')) {
       return;
     }
     try {
+      setError(null);
       await gradeService.delete(gradeId);
       setGrades(grades.filter(g => g.id !== gradeId));
       setBooks(books.filter(b => b.grade_id !== gradeId));
@@ -223,10 +224,11 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
   };
 
   const handleDeleteBook = async (bookId: number) => {
-    if (!confirm('Are you sure you want to delete this book? This will also delete all associated units and lessons.')) {
+    if (!confirm('Delete this book? Unused units and lessons under it will also be removed. Deletion is blocked if this book is assigned to any tasks or team members.')) {
       return;
     }
     try {
+      setError(null);
       await bookService.delete(bookId);
       setBooks(books.filter(b => b.id !== bookId));
       setUnits(units.filter(u => u.book_id !== bookId));
@@ -267,10 +269,11 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
   };
 
   const handleDeleteUnit = async (unitId: number) => {
-    if (!confirm('Are you sure you want to delete this unit? This will also delete all associated lessons.')) {
+    if (!confirm('Delete this unit? Unused lessons under it will also be removed. Deletion is blocked if this unit is assigned to any tasks or team members.')) {
       return;
     }
     try {
+      setError(null);
       await unitService.delete(unitId);
       setUnits(units.filter(u => u.id !== unitId));
       setLessons(lessons.filter(l => l.unit_id !== unitId));
@@ -307,10 +310,11 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
   };
 
   const handleDeleteLesson = async (lessonId: number) => {
-    if (!confirm('Are you sure you want to delete this lesson?')) {
+    if (!confirm('Delete this lesson? Deletion is blocked if it is assigned to any tasks or team members.')) {
       return;
     }
     try {
+      setError(null);
       await lessonService.delete(lessonId);
       setLessons(lessons.filter(l => l.id !== lessonId));
     } catch (err: any) {
@@ -380,8 +384,16 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
 
       {/* Error Display */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start justify-between gap-3">
           <p className="text-red-800">{error}</p>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="text-red-500 hover:text-red-700 p-1 rounded"
+            aria-label="Dismiss error"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 

@@ -69,6 +69,8 @@ async function resolveWebhookForTeam(teamName) {
     task_id: 1,
     project: 'Workflow App',
     taskDetails: 'Testing Teams integration',
+    taskDescription: 'This is a sample task description that will be displayed in the Teams notification. It provides detailed information about what the task involves.',
+    task_description: 'This is a sample task description that will be displayed in the Teams notification. It provides detailed information about what the task involves.',
     status: 'In Progress',
     serverLink: 'localhost',
     remark: 'This is a test message sent from the backend',

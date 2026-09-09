@@ -27,6 +27,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { teamService, categoryService, skillService, stageService, stageTemplateService } from '../services/apiService';
 import { AccessManagement } from './AccessManagement';
 import { ApiKeyManager } from './ApiKeyManager';
+import { AdminAuditManagement } from './AdminAuditManagement';
 
 interface Stage {
   id: string;
@@ -40,7 +41,7 @@ interface Stage {
 }
 
 export function Settings() {
-  const [activeTab, setActiveTab] = useState<'categories' | 'skills' | 'stages' | 'users' | 'functional-units' | 'access-management' | 'api-keys'>('categories');
+  const [activeTab, setActiveTab] = useState<'categories' | 'skills' | 'stages' | 'users' | 'functional-units' | 'access-management' | 'api-keys' | 'admin-audit'>('categories');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
@@ -139,6 +140,7 @@ export function Settings() {
     { key: 'stages', label: 'Project Stages', icon: Layers },
     { key: 'access-management', label: 'Access Management', icon: Shield },
     { key: 'api-keys', label: 'API Keys', icon: Key },
+    { key: 'admin-audit', label: 'Audit Management', icon: BarChart3 },
   ];
 
   const handleAddItem = async (type: string, data: any) => {
@@ -970,6 +972,7 @@ export function Settings() {
         {activeTab === 'functional-units' && renderFunctionalUnits()}
         {activeTab === 'access-management' && <AccessManagement />}
         {activeTab === 'api-keys' && <ApiKeyManager />}
+        {activeTab === 'admin-audit' && <AdminAuditManagement />}
       </div>
 
       {/* Add/Edit Modal */}

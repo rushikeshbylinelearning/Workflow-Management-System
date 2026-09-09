@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   Bell, 
   Clock, 
@@ -23,7 +23,7 @@ import { RichTextDisplay } from './ui/RichTextEditor';
 import { useToast } from './ui/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
-import { notificationService as apiNotificationService, taskService } from '../services/apiService';
+import { notificationService as apiNotificationService, taskService, teamService } from '../services/apiService';
 import notificationService from '../services/notificationService';
 
 interface Notification {
@@ -99,6 +99,9 @@ export function Notification() {
   const [remarkSortBy, setRemarkSortBy] = useState<'type' | 'date'>('type');
   const [remarkFilterType, setRemarkFilterType] = useState<string>('all');
 
+  // Active team members for user filter dropdown
+  const [activeMembers, setActiveMembers] = useState<string[]>([]);
+
   // Keep filterType in sessionStorage so user's choice persists until changed
   useEffect(() => {
     try {
@@ -106,21 +109,32 @@ export function Notification() {
     } catch {}
   }, [filterType]);
 
-  // Build a unique list of users from notifications to drive the User filter dropdown
-  const uniqueUsers = useMemo(() => {
-    const set = new Set<string>();
-    notifications.extensions.forEach(ext => {
-      if (ext.requester_name) set.add(ext.requester_name);
-    });
-    notifications.remarks.forEach(r => {
-      if (r.user_name) set.add(r.user_name);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [notifications.extensions, notifications.remarks]);
+  // Build a unique list of ACTIVE users from team members to drive the User filter dropdown
+  const uniqueUsers = activeMembers;
 
   // Check if user is admin; team users authenticate via teamToken
   const isTeamSession = typeof window !== 'undefined' && !!window.sessionStorage.getItem('teamToken');
   const isAdmin = !isTeamSession && user?.id !== undefined;
+
+  // Load active team members for the user filter (admin only)
+  useEffect(() => {
+    if (isAdmin) {
+      teamService.getMembers(false).then((members: any[]) => {
+        const names = members
+          .filter((m: any) => m.is_active !== false)
+          .map((m: any) => m.name || `${m.first_name ?? ''} ${m.last_name ?? ''}`.trim())
+          .filter(Boolean)
+          .sort((a: string, b: string) => a.localeCompare(b));
+        setActiveMembers(names);
+      }).catch(() => {
+        // Fallback: derive from notifications data
+        const set = new Set<string>();
+        notifications.extensions.forEach(ext => { if (ext.requester_name) set.add(ext.requester_name); });
+        notifications.remarks.forEach(r => { if (r.user_name) set.add(r.user_name); });
+        setActiveMembers(Array.from(set).sort((a, b) => a.localeCompare(b)));
+      });
+    }
+  }, [isAdmin]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -175,6 +189,15 @@ export function Notification() {
     }
   };
 
+  const reloadNotifications = () => {
+    if (isAdmin) {
+      return loadNotifications();
+    }
+    if (isTeamSession) {
+      return loadTeamNotifications();
+    }
+  };
+
   const handleViewTask = (taskId: number) => {
     
     // Mark this task as viewed
@@ -197,10 +220,7 @@ export function Notification() {
       const taskName = filteredNotifications.remarks.find(r => r.task_id === taskId)?.task_name || 'Task';
       showToast(`✅ Task "${taskName}" has been approved and marked as completed!`, 'success');
       
-      // Reload notifications to reflect the change
-      if (isAdmin) {
-        loadNotifications();
-      }
+      reloadNotifications();
     } catch (error: any) {
       console.error('Failed to approve task:', error);
       showToast('❌ Failed to approve task. Please try again.', 'error');
@@ -215,10 +235,7 @@ export function Notification() {
       const taskName = filteredNotifications.remarks.find(r => r.task_id === taskId)?.task_name || 'Task';
       showToast(`❌ Task "${taskName}" has been denied and marked as in-progress!`, 'success');
       
-      // Reload notifications to reflect the change
-      if (isAdmin) {
-        loadNotifications();
-      }
+      reloadNotifications();
     } catch (error: any) {
       console.error('Failed to deny task:', error);
       showToast('❌ Failed to deny task. Please try again.', 'error');
@@ -277,9 +294,7 @@ export function Notification() {
       setExtensionNotes('');
       setApprovedDate('');
       
-      if (isAdmin) {
-        loadNotifications();
-      }
+      reloadNotifications();
     } catch (error: any) {
       console.error('Failed to review extension:', error);
       showToast('❌ Failed to review extension request. Please try again.', 'error');
@@ -490,7 +505,7 @@ export function Notification() {
           <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">Error Loading Notifications</h3>
           <p className="text-red-600 mb-4">{error}</p>
-          <Button onClick={loadNotifications}>
+          <Button onClick={reloadNotifications}>
             <RefreshCw className="w-4 h-4 mr-2" />
             Try Again
           </Button>
@@ -508,12 +523,12 @@ export function Notification() {
         <div className="absolute -bottom-14 -left-12 w-56 h-56 bg-white/10 rounded-full blur-2xl" />
         <div className="relative z-10 flex items-center justify-between gap-6">
           <div>
-            <h1 className="text-2xl font-bold">Notifications</h1>
+            <h1 className="text-2xl font-bold">Extension Management</h1>
             <p className="text-white/70">
-              {totalNotifications} New Activit{totalNotifications !== 1 ? 'ies' : 'y'}
+              {totalNotifications} New Extension{totalNotifications !== 1 ? 's' : ''}
             </p>
           </div>
-          <Button onClick={loadNotifications} variant="dark">
+          <Button onClick={reloadNotifications} variant="dark">
             <RefreshCw className="w-4 h-4 mr-2" />
             Refresh
           </Button>
@@ -558,40 +573,14 @@ export function Notification() {
               )}
             </div>
 
-            {/* Filter by User (Dropdown) */}
-            <div className="flex items-center space-x-2">
-              <label className="text-sm font-medium text-gray-700">User:</label>
-              <select
-                value={filterUser}
-                onChange={(e) => setFilterUser(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent min-w-[200px]"
-              >
-                <option value="">All Users</option>
-                {uniqueUsers.map(u => (
-                  <option key={u} value={u}>{u}</option>
-                ))}
-              </select>
-              {filterUser && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setFilterUser('')}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-
             {/* Clear All Filters */}
-            {(filterType !== 'all' || filterDate || filterUser) && (
+            {(filterType !== 'all' || filterDate) && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   setFilterType('all');
                   setFilterDate('');
-                  setFilterUser('');
                 }}
                 className="text-gray-600 hover:text-gray-800"
               >
@@ -720,8 +709,8 @@ export function Notification() {
                       <span>View Details</span>
                     </Button>
                     
-                    {/* Approve/Deny buttons for pending extensions - Right Side */}
-                    {extension.status === 'pending' && (
+                    {/* Approve/Deny buttons for pending extensions - admin only */}
+                    {isAdmin && extension.status === 'pending' && (
                       <div className="flex space-x-3">
                         <Button 
                           size="sm" 
@@ -922,8 +911,8 @@ export function Notification() {
                       <span>View Details</span>
                     </Button>
                     
-                    {/* Approve/Deny buttons for completed remarks on under-review tasks - Right Side */}
-                    {remark.remark_type === 'complete' && remark.task_status === 'under-review' && (
+                    {/* Approve/Deny buttons for completed remarks on under-review tasks - admin only */}
+                    {isAdmin && remark.remark_type === 'complete' && remark.task_status === 'under-review' && (
                       <div className="flex space-x-3">
                         <Button 
                           size="sm" 

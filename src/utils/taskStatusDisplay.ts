@@ -53,3 +53,26 @@ export function isResubmissionWorkflowStatus(status?: string): boolean {
   const s = normalizeTaskStatus(status);
   return s === 'returned' || s === 'redo-requested' || s === 'resubmitted';
 }
+
+/** Statuses the admin task edit modal may change via its dropdown. */
+export const ADMIN_EDITABLE_TASK_STATUSES = [
+  'not-started',
+  'in-progress',
+  'under-review',
+  'completed',
+  'blocked',
+  'on-hold',
+] as const;
+
+export function isAdminEditableTaskStatus(status?: string): boolean {
+  const s = normalizeTaskStatus(status);
+  return (ADMIN_EDITABLE_TASK_STATUSES as readonly string[]).includes(s);
+}
+
+/** Omit rework workflow statuses so metadata edits do not re-submit invalid status. */
+export function pickTaskUpdateStatus(status?: string): { status?: string } {
+  if (status && isAdminEditableTaskStatus(status)) {
+    return { status };
+  }
+  return {};
+}

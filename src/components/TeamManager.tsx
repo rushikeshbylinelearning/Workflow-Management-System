@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
@@ -12,13 +12,22 @@ import {
   Edit, 
   Trash2,
   Search, 
-  Filter, 
   Eye,
   UserMinus,
   UserPlus,
   Flag,
   Building2,
   Star,
+  MoreVertical,
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  Circle,
+  Briefcase,
+  Mail,
+  ChevronDown,
+  ChevronUp,
+  ListTodo,
 } from 'lucide-react';
 import { teamService, skillService, taskService, performanceFlagService } from '../services/apiService';
 import { useApp } from '../contexts/AppContext';
@@ -42,6 +51,8 @@ interface TeamMember {
   is_active: boolean;
   created_at: string;
   task_count?: number; // Number of tasks assigned to this member
+  active_project_count?: number; // Number of active projects
+  active_project_names?: string[]; // Names of active projects
 }
 
 interface Team {
@@ -100,6 +111,8 @@ export function TeamManager() {
   const [availableMembersForTeam, setAvailableMembersForTeam] = useState<TeamMember[]>([]);
   const [showMemberDetailsModal, setShowMemberDetailsModal] = useState(false);
   const [selectedMember, setSelectedMember] = useState<any>(null);
+  const [memberProjects, setMemberProjects] = useState<{ active: any[]; completed: any[]; overdue: any[] } | null>(null);
+  const [loadingMemberProjects, setLoadingMemberProjects] = useState(false);
   const [showFlagModal, setShowFlagModal] = useState(false);
   const [flaggingMember, setFlaggingMember] = useState<{ id: number; name: string } | null>(null);
   
@@ -131,7 +144,7 @@ export function TeamManager() {
     if (isAuthenticated()) {
       fetchData();
     }
-  }, [user, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user, activeTab, showInactiveMembers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch available skills
   useEffect(() => {
@@ -166,7 +179,7 @@ export function TeamManager() {
       
       if (activeTab === 'members') {
         const [membersData, tasksData] = await Promise.all([
-          teamService.getMembers(),
+          teamService.getMembers(showInactiveMembers),
           taskService.getAll({ all: 'true' })
         ]);
         
@@ -561,7 +574,14 @@ export function TeamManager() {
 
   const handleViewMemberDetails = (member: any) => {
     setSelectedMember(member);
+    setMemberProjects(null);
     setShowMemberDetailsModal(true);
+    // Fetch projects for this member
+    setLoadingMemberProjects(true);
+    teamService.getMemberProjects(member.id)
+      .then((data) => setMemberProjects(data))
+      .catch((err) => console.warn('Failed to load member projects:', err))
+      .finally(() => setLoadingMemberProjects(false));
   };
 
   const handleOpenFlagModal = (member: TeamMember) => {
@@ -1130,12 +1150,14 @@ export function TeamManager() {
           onClose={() => {
             setShowMemberDetailsModal(false);
             setSelectedMember(null);
+            setMemberProjects(null);
           }}
           title={`${selectedMember.name} - Member Details`}
         >
-          <div className="space-y-4">
+          <div className="space-y-5">
+            {/* Avatar + basic info */}
             <div className="flex items-center space-x-4">
-              <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
+              <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-white font-semibold text-lg">
                   {selectedMember.name.split(' ').map((n: string) => n[0]).join('').toUpperCase()}
                 </span>
@@ -1146,6 +1168,7 @@ export function TeamManager() {
               </div>
             </div>
 
+            {/* Email + skill count */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Email</label>
@@ -1157,6 +1180,7 @@ export function TeamManager() {
               </div>
             </div>
 
+            {/* Skill badges */}
             {selectedMember.skills && selectedMember.skills.length > 0 && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Skill Details</label>
@@ -1168,12 +1192,101 @@ export function TeamManager() {
               </div>
             )}
 
+            {/* ── Projects section ── */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">Projects</label>
+
+              {loadingMemberProjects ? (
+                <div className="text-sm text-gray-500 py-3 text-center">Loading projects…</div>
+              ) : memberProjects ? (
+                <div className="space-y-4">
+
+                  {/* Active Projects */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0"></span>
+                      <span className="text-sm font-semibold text-blue-700">
+                        Active Projects ({memberProjects.active.length})
+                      </span>
+                    </div>
+                    {memberProjects.active.length === 0 ? (
+                      <p className="text-xs text-gray-400 pl-4">No active projects</p>
+                    ) : (
+                      <ul className="space-y-1.5 pl-4">
+                        {memberProjects.active.map((p: any) => (
+                          <li key={p.id} className="flex items-center justify-between rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-sm">
+                            <span className="font-medium text-gray-800 truncate mr-2">{p.name}</span>
+                            <span className="text-xs text-blue-600 whitespace-nowrap capitalize">{p.status}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Completed Projects */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
+                      <span className="text-sm font-semibold text-green-700">
+                        Completed Projects ({memberProjects.completed.length})
+                      </span>
+                    </div>
+                    {memberProjects.completed.length === 0 ? (
+                      <p className="text-xs text-gray-400 pl-4">No completed projects</p>
+                    ) : (
+                      <ul className="space-y-1.5 pl-4">
+                        {memberProjects.completed.map((p: any) => (
+                          <li key={p.id} className="flex items-center justify-between rounded-lg bg-green-50 border border-green-100 px-3 py-2 text-sm">
+                            <span className="font-medium text-gray-800 truncate mr-2">{p.name}</span>
+                            <span className="text-xs text-green-600 whitespace-nowrap">Completed</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Overdue Projects */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0"></span>
+                      <span className="text-sm font-semibold text-red-700">
+                        Overdue Projects ({memberProjects.overdue.length})
+                      </span>
+                    </div>
+                    {memberProjects.overdue.length === 0 ? (
+                      <p className="text-xs text-gray-400 pl-4">No overdue projects</p>
+                    ) : (
+                      <ul className="space-y-1.5 pl-4">
+                        {memberProjects.overdue.map((p: any) => (
+                          <li key={p.id} className="flex items-center justify-between rounded-lg bg-red-50 border border-red-100 px-3 py-2 text-sm">
+                            <span className="font-medium text-gray-800 truncate mr-2">{p.name}</span>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {p.end_date && (
+                                <span className="text-xs text-red-500 whitespace-nowrap">
+                                  Due {new Date(p.end_date).toLocaleDateString()}
+                                </span>
+                              )}
+                              <span className="text-xs text-red-600 capitalize whitespace-nowrap">{p.status}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">Could not load project data.</p>
+              )}
+            </div>
+
             <div className="flex justify-end pt-4 border-t">
               <Button 
                 variant="outline"
                 onClick={() => {
                   setShowMemberDetailsModal(false);
                   setSelectedMember(null);
+                  setMemberProjects(null);
                 }}
               >
                 Close
@@ -1200,7 +1313,295 @@ export function TeamManager() {
     );
   }
 
-// Team Members Tab Component
+// ─────────────────────────────────────────────────────────────────────────────
+// Avatar helper — deterministic colour from name
+// ─────────────────────────────────────────────────────────────────────────────
+const AVATAR_GRADIENTS = [
+  'from-blue-500 to-indigo-600',
+  'from-violet-500 to-purple-600',
+  'from-emerald-500 to-teal-600',
+  'from-rose-500 to-pink-600',
+  'from-amber-500 to-orange-600',
+  'from-cyan-500 to-sky-600',
+  'from-fuchsia-500 to-pink-600',
+  'from-lime-500 to-green-600',
+];
+
+function getAvatarGradient(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+}
+
+function getInitials(name: string) {
+  return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+}
+
+// Tooltip wrapper
+function Tooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="relative group/tip">
+      {children}
+      <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
+                      whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-xs text-white
+                      opacity-0 group-hover/tip:opacity-100 transition-opacity duration-150">
+        {label}
+        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+      </div>
+    </div>
+  );
+}
+
+// Chip list with expand/collapse
+function ChipList({ items, colourClass }: { items: string[]; colourClass: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const SHOW = 3;
+  const visible = expanded ? items : items.slice(0, SHOW);
+  const overflow = items.length - SHOW;
+  if (items.length === 0) return <span className="text-xs text-gray-400 italic">None</span>;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {visible.map((item, i) => (
+        <span key={i} className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${colourClass}`}>
+          {item}
+        </span>
+      ))}
+      {!expanded && overflow > 0 && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
+          className="inline-flex items-center gap-0.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors">
+          +{overflow} <ChevronDown className="w-3 h-3" />
+        </button>
+      )}
+      {expanded && overflow > 0 && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+          className="inline-flex items-center gap-0.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors">
+          Less <ChevronUp className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Status pill
+function StatusPill({ active }: { active: boolean }) {
+  return active ? (
+    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />Active
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 border border-gray-200 px-2.5 py-0.5 text-xs font-semibold text-gray-500">
+      <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />Inactive
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Individual Employee Card
+// ─────────────────────────────────────────────────────────────────────────────
+interface MemberCardProps {
+  member: TeamMember;
+  isSelected: boolean;
+  onSelect: (id: number) => void;
+  onViewTasks: (member: TeamMember) => void;
+  onEdit: (member: TeamMember) => void;
+  onDelete: (id: number) => void;
+  onToggleStatus: (id: number, currentStatus: boolean) => void;
+  onFlag: (member: TeamMember) => void;
+}
+
+const MemberCard = memo(function MemberCard({
+  member, isSelected, onSelect, onViewTasks, onEdit, onDelete, onToggleStatus, onFlag,
+}: MemberCardProps) {
+  const gradient  = getAvatarGradient(member.name);
+  const initials  = getInitials(member.name);
+  const taskCount = member.task_count || 0;
+  const flags     = member.performance_flags_summary ?? { red: 0, orange: 0, yellow: 0, green: 0 };
+  const totalFlags = flags.red + flags.orange + flags.yellow + flags.green;
+  const activeProjectCount = member.active_project_count || 0;
+  const activeProjectNames = member.active_project_names || [];
+
+  const perfMetrics = [
+    { label: 'Critical',     value: flags.red,    icon: AlertCircle,  colour: 'text-red-500',     bg: 'bg-red-50'     },
+    { label: 'Warning',      value: flags.orange, icon: Clock,        colour: 'text-amber-500',   bg: 'bg-amber-50'   },
+    { label: 'Observation',  value: flags.yellow, icon: Circle,       colour: 'text-yellow-500',  bg: 'bg-yellow-50'  },
+    { label: 'Positive',     value: flags.green,  icon: CheckCircle2, colour: 'text-emerald-500', bg: 'bg-emerald-50' },
+  ];
+
+  const taskBarColour =
+    taskCount === 0  ? ''
+    : taskCount < 5  ? 'bg-emerald-500'
+    : taskCount < 10 ? 'bg-blue-500'
+    : taskCount < 20 ? 'bg-amber-500'
+    : 'bg-red-500';
+
+  const taskLabel =
+    taskCount === 0  ? 'No tasks assigned'
+    : taskCount < 5  ? 'Light workload'
+    : taskCount < 10 ? 'Moderate workload'
+    : taskCount < 20 ? 'Heavy workload'
+    : 'Critical workload';
+
+  return (
+    <article
+      className={[
+        'group relative flex flex-col bg-white rounded-xl border transition-all duration-200',
+        'hover:shadow-[0_8px_30px_rgba(0,0,0,0.10)] hover:-translate-y-0.5',
+        isSelected ? 'ring-2 ring-blue-500 border-blue-300 shadow-md' : 'border-gray-200 shadow-sm hover:border-blue-200',
+        !member.is_active ? 'opacity-60' : '',
+      ].join(' ')}
+      aria-label={`Employee card for ${member.name}`}
+    >
+      {/* ── Header ── */}
+      <div className="flex items-start gap-3 px-4 pt-4 pb-3">
+        <input type="checkbox" aria-label={`Select ${member.name}`}
+          checked={isSelected} onChange={() => onSelect(member.id)} onClick={e => e.stopPropagation()}
+          className="mt-1 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
+        <div className={`w-12 h-12 flex-shrink-0 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center shadow-sm`}>
+          <span className="text-white font-bold text-sm tracking-wide">{initials}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-1">
+            <h3 className="text-[15px] font-semibold text-gray-900 leading-snug truncate cursor-pointer hover:text-blue-600 transition-colors"
+              title={member.name} onClick={() => onViewTasks(member)}>
+              {member.name}
+            </h3>
+            <StatusPill active={member.is_active} />
+          </div>
+          <p className="flex items-center gap-1 text-[13px] text-gray-500 truncate mt-0.5" title={member.email}>
+            <Mail className="w-3 h-3 flex-shrink-0 text-gray-400" />{member.email}
+          </p>
+          {member.team_names && member.team_names.length > 0 && (
+            <p className="flex items-center gap-1 text-[12px] text-gray-400 mt-0.5 truncate">
+              <Briefcase className="w-3 h-3 flex-shrink-0" />{member.team_names.join(' · ')}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mx-4 border-t border-gray-100" />
+
+      {/* ── Task Progress ── */}
+      <div className="px-4 py-3">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">
+            <ListTodo className="w-3.5 h-3.5" />Task Load
+          </span>
+          <span className="text-[13px] font-bold text-gray-800">{taskCount} Tasks</span>
+        </div>
+        <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${taskBarColour}`}
+            style={{ width: taskCount === 0 ? '0%' : `${Math.min(taskCount * 5, 100)}%` }}
+            role="progressbar" aria-valuenow={taskCount} aria-valuemin={0} aria-valuemax={20} />
+        </div>
+        <p className="mt-1 text-[11px] text-gray-400">{taskLabel}</p>
+      </div>
+
+      <div className="mx-4 border-t border-gray-100" />
+
+      {/* ── Skills & Teams ── */}
+      <div className="px-4 py-3 space-y-2.5">
+        <div>
+          <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide block mb-1.5">Skills</span>
+          <ChipList items={member.skills || []} colourClass="bg-blue-50 text-blue-700 border border-blue-100" />
+        </div>
+        {member.team_names && member.team_names.length > 0 && (
+          <div>
+            <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide block mb-1.5">Teams</span>
+            <ChipList items={member.team_names} colourClass="bg-violet-50 text-violet-700 border border-violet-100" />
+          </div>
+        )}
+      </div>
+
+      {/* ── Performance Metrics (always shown) ── */}
+      <>
+        <div className="mx-4 border-t border-gray-100" />
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Performance Flags</span>
+            {totalFlags > 0 && (
+              <span className="inline-flex items-center justify-center rounded-full bg-gray-800 text-white text-[10px] font-bold px-2 py-0.5 min-w-[20px]">
+                {totalFlags}
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {perfMetrics.map(({ label, value, icon: Icon, colour, bg }) => (
+              <Tooltip key={label} label={label}>
+                <div className={`flex flex-col items-center justify-center rounded-lg ${value > 0 ? bg : 'bg-gray-50'} py-2 px-1 cursor-default`}>
+                  <Icon className={`w-3.5 h-3.5 ${value > 0 ? colour : 'text-gray-300'} mb-0.5`} />
+                  <span className={`text-sm font-bold ${value > 0 ? colour : 'text-gray-400'}`}>{value}</span>
+                  <span className="text-[10px] text-gray-500 leading-none mt-0.5 truncate w-full text-center">{label}</span>
+                </div>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      </>
+
+      {/* ── Active Projects ── */}
+      {activeProjectCount > 0 && (
+        <>
+          <div className="mx-4 border-t border-gray-100" />
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Active Projects</span>
+              <span className="inline-flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 min-w-[20px]">
+                {activeProjectCount}
+              </span>
+            </div>
+            <ChipList items={activeProjectNames} colourClass="bg-blue-50 text-blue-700 border border-blue-100" />
+          </div>
+        </>
+      )}
+
+      {/* ── Quick Actions footer ── */}
+      <div className="mx-4 border-t border-gray-100 mt-auto" />
+      <div className="flex items-center justify-between px-3 py-2.5">
+        <Tooltip label="View Tasks">
+          <button type="button" aria-label="View tasks"
+            onClick={e => { e.stopPropagation(); onViewTasks(member); }}
+            className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <Eye className="w-4 h-4" />
+          </button>
+        </Tooltip>
+        <Tooltip label={member.is_active ? 'Deactivate' : 'Activate'}>
+          <button type="button" aria-label={member.is_active ? 'Deactivate' : 'Activate'}
+            onClick={e => { e.stopPropagation(); onToggleStatus(member.id, member.is_active); }}
+            className={`flex items-center justify-center h-9 w-9 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1
+              ${member.is_active ? 'text-gray-500 hover:bg-amber-50 hover:text-amber-600 focus:ring-amber-400'
+                                 : 'text-gray-400 hover:bg-emerald-50 hover:text-emerald-600 focus:ring-emerald-400'}`}>
+            {member.is_active ? <UserMinus className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+          </button>
+        </Tooltip>
+        <Tooltip label="Flag Employee">
+          <button type="button" aria-label="Flag employee"
+            onClick={e => { e.stopPropagation(); onFlag(member); }}
+            className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-yellow-50 hover:text-yellow-600 transition-colors focus:outline-none focus:ring-2 focus:ring-yellow-400">
+            <Flag className="w-4 h-4" />
+          </button>
+        </Tooltip>
+        <Tooltip label="Edit Member">
+          <button type="button" aria-label="Edit member"
+            onClick={e => { e.stopPropagation(); onEdit(member); }}
+            className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <Edit className="w-4 h-4" />
+          </button>
+        </Tooltip>
+        <Tooltip label="Delete Member">
+          <button type="button" aria-label="Delete member"
+            onClick={e => { e.stopPropagation(); onDelete(member.id); }}
+            className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-red-50 hover:text-red-600 transition-colors focus:outline-none focus:ring-2 focus:ring-red-400">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </Tooltip>
+      </div>
+    </article>
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Team Members Tab
+// ─────────────────────────────────────────────────────────────────────────────
 interface TeamMembersTabProps {
   members: TeamMember[];
   onEdit: (member: TeamMember) => void;
@@ -1213,226 +1614,59 @@ interface TeamMembersTabProps {
   onSelectAll: () => void;
 }
 
-function TeamMembersTab({ 
-  members, 
-  onEdit, 
-  onDelete, 
-  onToggleStatus,
-  onFlag,
-  onViewTasks,
-  selectedMembers,
-  onSelectMember,
-  onSelectAll
+function TeamMembersTab({
+  members, onEdit, onDelete, onToggleStatus, onFlag, onViewTasks, selectedMembers, onSelectMember, onSelectAll,
 }: TeamMembersTabProps) {
+  if (members.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+          <Users className="w-8 h-8 text-gray-300" />
+        </div>
+        <p className="text-base font-semibold text-gray-500">No team members found</p>
+        <p className="text-sm text-gray-400 mt-1">Try adjusting your search or add a new member.</p>
+      </div>
+    );
+  }
+  const allSelected = selectedMembers.length === members.length && members.length > 0;
+  const someSelected = selectedMembers.length > 0 && selectedMembers.length < members.length;
+  const selectAllRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
   return (
     <div className="space-y-4">
-      {/* Select All Checkbox */}
-      {members.length > 0 && (
-        <div className="flex items-center space-x-2 p-4 bg-gray-50 rounded-lg">
-          <input
-            type="checkbox"
-            checked={selectedMembers.length === members.length && members.length > 0}
-            onChange={onSelectAll}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
-          <span className="text-sm font-medium text-gray-700">
-            Select All ({members.length} members)
-          </span>
-        </div>
-      )}
-      
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,300px),1fr))] gap-4 sm:gap-6 w-full min-w-0">
-      {members.map((member) => (
-        <Card 
-          key={member.id} 
-          className={`min-w-0 w-full overflow-hidden hover:shadow-lg transition-shadow duration-200 cursor-pointer ${
-            selectedMembers.includes(member.id) ? 'ring-2 ring-blue-500' : ''
-          } ${!member.is_active ? 'opacity-60' : ''}`}
-          onClick={() => onViewTasks(member)}
-        >
-          <CardContent className="p-4 sm:p-6">
-            <div className="flex items-start justify-between min-w-0">
-              <div className="flex items-start space-x-3 flex-1 min-w-0">
-                <input
-                  type="checkbox"
-                  checked={selectedMembers.includes(member.id)}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    onSelectMember(member.id);
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  className="mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <div className="flex-1 min-w-0">
-                <div className="flex items-start sm:items-center space-x-3 mb-3 min-w-0">
-                  <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
-                    <span className="text-white font-semibold text-sm">
-                      {member.name.split(' ').map(n => n[0]).join('').toUpperCase()}
-                    </span>
-                  </div>
-        <div className="min-w-0 flex-1">
-                    <h3 className="font-semibold text-gray-900 text-lg truncate" title={member.name}>{member.name}</h3>
-                    <p className="text-sm text-gray-600 flex items-center min-w-0">
-                      <span className={`w-2 h-2 flex-shrink-0 ${member.is_active ? 'bg-green-500' : 'bg-gray-400'} rounded-full mr-2`}></span>
-                      <span className="truncate" title={member.email}>{member.email}</span>
-                    </p>
-                    {member.passcode && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Passcode: <span className="font-mono bg-gray-100 px-1 rounded">{member.passcode}</span>
-                      </p>
-                    )}
-        </div>
-          </div>
-                
-                <div className="mb-4 space-y-3">
-                  {/* Task Count */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700">Tasks</span>
-                      <span className="text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded-full">
-                        {member.task_count || 0} tasks
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div 
-                        className="bg-orange-500 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min((member.task_count || 0) * 10, 100)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700">Skills</span>
-                      <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
-                        {member.skills.length} skills
-                      </span>
-                    </div>
-
-                    {member.skills.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {member.skills.slice(0, 3).map((skill, index) => (
-                          <Badge key={index} variant="secondary" className="text-xs px-2 py-1">
-                            {skill}
-                          </Badge>
-                        ))}
-                        {member.skills.length > 3 && (
-                          <Badge variant="secondary" className="text-xs px-2 py-1">
-                            +{member.skills.length - 3} more
-                          </Badge>
-                        )}
-              </div>
-                    )}
-              </div>
-
-                  {member.team_names && member.team_names.length > 0 && (
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-medium text-gray-700">Teams</span>
-                        <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                          {member.team_names.length} team{member.team_names.length > 1 ? 's' : ''}
-                        </span>
-              </div>
-                      
-                      <div className="flex flex-wrap gap-1">
-                        {member.team_names.map((teamName, index) => (
-                          <Badge key={index} variant="default" className="text-xs px-2 py-1 bg-green-100 text-green-800">
-                            {teamName}
-                          </Badge>
-                        ))}
-              </div>
-              </div>
-                  )}
-            </div>
-
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex flex-wrap items-center gap-2 min-w-0">
-                    <Badge variant={member.is_active ? "default" : "secondary"} className="px-3 py-1">
-                      {member.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
-                    {member.performance_flags_count > 0 && (
-                      <div className="flex flex-wrap items-center gap-1">
-                        <Badge variant="danger" className="px-2 py-1 text-xs">
-                          🔴 {member.performance_flags_summary?.red || 0}
-                        </Badge>
-                        <Badge variant="warning" className="px-2 py-1 text-xs">
-                          🟠 {member.performance_flags_summary?.orange || 0}
-                        </Badge>
-                        <Badge variant="warning" className="px-2 py-1 text-xs">
-                          🟡 {member.performance_flags_summary?.yellow || 0}
-                        </Badge>
-                        <Badge variant="success" className="px-2 py-1 text-xs">
-                          🟢 {member.performance_flags_summary?.green || 0}
-                        </Badge>
-                      </div>
-                    )}
+      {/* Select-all bar */}
+      <div className="flex items-center gap-3 rounded-lg bg-gray-50 border border-gray-200 px-4 py-2.5">
+        <input ref={selectAllRef} id="select-all" type="checkbox" checked={allSelected} onChange={onSelectAll}
+          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          aria-label="Select all members" />
+        <label htmlFor="select-all" className="text-sm font-medium text-gray-700 cursor-pointer select-none">
+          {allSelected ? 'Deselect all' : 'Select all'}
+          <span className="ml-1 text-gray-400">({members.length} {members.length === 1 ? 'member' : 'members'})</span>
+        </label>
+        {someSelected && (
+          <span className="text-sm text-blue-600 font-medium ml-1">{selectedMembers.length} selected</span>
+        )}
       </div>
-
-                  <div className="flex flex-wrap gap-1 justify-end flex-shrink-0">
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleStatus(member.id, member.is_active);
-                      }}
-                      className={`${
-                        member.is_active 
-                          ? 'hover:bg-orange-50 hover:border-orange-300' 
-                          : 'hover:bg-green-50 hover:border-green-300'
-                      } transition-colors`}
-                      title={member.is_active ? 'Deactivate member' : 'Activate member'}
-                    >
-                      {member.is_active ? <UserMinus className="w-3 h-3" /> : <UserPlus className="w-3 h-3" />}
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onFlag(member);
-                      }}
-                      className="hover:bg-yellow-50 hover:border-yellow-300 transition-colors"
-                      title="Flag Employee"
-                    >
-                      <Flag className="w-3 h-3 text-yellow-600" />
-                    </Button>
-            <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEdit(member);
-                      }}
-                      className="hover:bg-blue-50 hover:border-blue-300 transition-colors"
-                    >
-                      <Edit className="w-3 h-3" />
-            </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(member.id);
-                      }}
-                      className="hover:bg-red-50 hover:border-red-300 transition-colors"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
+      {/* Card grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {members.map(member => (
+          <MemberCard key={member.id} member={member}
+            isSelected={selectedMembers.includes(member.id)}
+            onSelect={onSelectMember} onViewTasks={onViewTasks}
+            onEdit={onEdit} onDelete={onDelete} onToggleStatus={onToggleStatus} onFlag={onFlag} />
+        ))}
+      </div>
     </div>
   );
 }
 
-// Teams Tab Component
+// ─────────────────────────────────────────────────────────────────────────────
+// Teams Tab
+// ─────────────────────────────────────────────────────────────────────────────
 interface TeamsTabProps {
   teams: Team[];
   onEdit: (team: Team) => void;
@@ -1449,118 +1683,84 @@ function TeamsTab({ teams, onEdit, onDelete, onViewDetails }: TeamsTabProps) {
         </div>
         <h3 className="text-xl font-semibold text-gray-900 mb-2">No teams found</h3>
         <p className="text-gray-600 mb-6">Create your first team to get started.</p>
-        <Button className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700">
-          <Plus className="w-4 h-4 mr-2" />
-          Create Team
-        </Button>
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,300px),1fr))] gap-4 sm:gap-6 w-full min-w-0">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {teams.map((team) => (
-        <Card key={team.id} className="min-w-0 w-full overflow-hidden hover:shadow-lg transition-shadow duration-200">
-          <CardContent className="p-4 sm:p-6">
-            <div className="flex items-start justify-between min-w-0">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start sm:items-center space-x-3 mb-3 min-w-0">
-                  <div className="w-12 h-12 flex-shrink-0 bg-gradient-to-br from-green-500 to-teal-600 rounded-lg flex items-center justify-center">
-                    <Building2 className="w-6 h-6 text-white" />
-                  </div>
-          <div className="min-w-0 flex-1">
-                    <h3 className="font-semibold text-gray-900 text-lg truncate" title={team.name}>{team.name}</h3>
-                    <p className="text-sm text-gray-600 line-clamp-2">{team.description || 'No description'}</p>
-                  </div>
+        <div key={team.id}
+          className="group flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-[0_8px_30px_rgba(0,0,0,0.10)] hover:-translate-y-0.5 transition-all duration-200">
+          {/* Header */}
+          <div className="flex items-start gap-3 px-4 pt-4 pb-3">
+            <div className="w-11 h-11 flex-shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm">
+              <Building2 className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-1">
+                <h3 className="text-[15px] font-semibold text-gray-900 truncate leading-snug" title={team.name}>{team.name}</h3>
+                <span className={`flex-shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold
+                  ${team.is_active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-gray-100 text-gray-500 border border-gray-200'}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${team.is_active ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                  {team.is_active ? 'Active' : 'Inactive'}
+                </span>
+              </div>
+              <p className="text-[12px] text-gray-500 line-clamp-1 mt-0.5">{team.description || 'No description'}</p>
+            </div>
           </div>
-
-                <div className="space-y-3 mb-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <Building2 className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">{team.functional_unit_name || 'No unit'}</span>
-          </div>
-                    <Badge variant={team.is_active ? "default" : "secondary"} className="px-2 py-1 text-xs">
-                      {team.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
-        </div>
-
-                  <div className="flex items-center space-x-2">
-                    <Users2 className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-600">
-                      {team.member_count || 0} / {team.max_capacity || 10} members
-                    </span>
-                    <div className="flex-1 ml-2">
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div 
-                          className="bg-gradient-to-r from-blue-500 to-purple-600 h-2 rounded-full transition-all duration-300"
-                          style={{ width: `${Math.min(((team.member_count || 0) / (team.max_capacity || 10)) * 100, 100)}%` }}
-                        ></div>
-                      </div>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-                    <Star className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-600">{team.team_lead_name || 'No team lead'}</span>
-                  </div>
-        </div>
-
-                {team.skills && team.skills.length > 0 && (
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700">Team Skills</span>
-                      <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                        {team.skills.length} skills
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {team.skills.slice(0, 3).map((skill, index) => (
-                        <Badge key={index} variant="secondary" className="text-xs px-2 py-1">
-                          {skill}
-                        </Badge>
-                      ))}
-                      {team.skills.length > 3 && (
-                        <Badge variant="secondary" className="text-xs px-2 py-1">
-                          +{team.skills.length - 3} more
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-end">
-                  <div className="flex flex-wrap gap-1">
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={() => onViewDetails(team)}
-                      className="hover:bg-blue-50 hover:border-blue-300 transition-colors"
-                    >
-                      <Users className="w-3 h-3" />
-          </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={() => onEdit(team)}
-                      className="hover:bg-green-50 hover:border-green-300 transition-colors"
-                    >
-                      <Edit className="w-3 h-3" />
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={() => onDelete(team.id)}
-                      className="hover:bg-red-50 hover:border-red-300 transition-colors"
-                    >
-                      <Trash2 className="w-3 h-3" />
-          </Button>
-        </div>
-                </div>
+          <div className="mx-4 border-t border-gray-100" />
+          {/* Stats */}
+          <div className="px-4 py-3 space-y-2">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Capacity</span>
+                <span className="text-[12px] font-semibold text-gray-700">
+                  {team.member_count || 0} <span className="text-gray-400 font-normal">/ {team.max_capacity || 10}</span>
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-500"
+                  style={{ width: `${Math.min(((team.member_count || 0) / (team.max_capacity || 10)) * 100, 100)}%` }} />
               </div>
             </div>
-          </CardContent>
-        </Card>
+            <div className="flex items-center gap-1.5 text-[12px] text-gray-500">
+              <Star className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              <span className="truncate">{team.team_lead_name || 'No team lead'}</span>
+            </div>
+            {team.functional_unit_name && (
+              <div className="flex items-center gap-1.5 text-[12px] text-gray-500">
+                <Building2 className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                <span className="truncate">{team.functional_unit_name}</span>
+              </div>
+            )}
+            {team.skills && team.skills.length > 0 && (
+              <ChipList items={team.skills} colourClass="bg-teal-50 text-teal-700 border border-teal-100" />
+            )}
+          </div>
+          <div className="mx-4 border-t border-gray-100 mt-auto" />
+          {/* Actions */}
+          <div className="flex items-center justify-around px-3 py-2.5">
+            <Tooltip label="View Members">
+              <button type="button" aria-label="View team members" onClick={() => onViewDetails(team)}
+                className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <Users className="w-4 h-4" />
+              </button>
+            </Tooltip>
+            <Tooltip label="Edit Team">
+              <button type="button" aria-label="Edit team" onClick={() => onEdit(team)}
+                className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <Edit className="w-4 h-4" />
+              </button>
+            </Tooltip>
+            <Tooltip label="Delete Team">
+              <button type="button" aria-label="Delete team" onClick={() => onDelete(team.id)}
+                className="flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:bg-red-50 hover:text-red-600 transition-colors focus:outline-none focus:ring-2 focus:ring-red-400">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </Tooltip>
+          </div>
+        </div>
       ))}
     </div>
   );

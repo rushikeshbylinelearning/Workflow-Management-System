@@ -28,7 +28,10 @@ const {
   addMemberToTeam,
   removeMemberFromTeam,
   debugTeamMemberData,
-  createSampleData
+  createSampleData,
+
+  // Projects for a team member
+  getTeamMemberProjects,
 } = require('../controllers/teamController');
 
 // =====================================================
@@ -57,6 +60,9 @@ router.delete('/flags/:flagId', requireAdminAuth, removePerformanceFlag);
 
 // Get team member by ID
 router.get('/members/:id', requireAdminOrPMAuth, getTeamMemberById);
+
+// Get projects for a specific team member (active, completed, overdue)
+router.get('/members/:id/projects', requireAdminOrPMAuth, getTeamMemberProjects);
 
 // Create new team member
 router.post('/members', requireAdminAuth, createTeamMember);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
 import {
   Plus,
   CheckSquare,
@@ -10,6 +10,8 @@ import {
   Eye,
   Upload,
   RotateCcw,
+  LayoutGrid,
+  List as ListIcon,
   type LucideIcon,
 } from 'lucide-react';
 import { Card, CardContent } from './ui/Card';
@@ -23,7 +25,7 @@ import { Task, TaskStatus, Priority } from '../types';
 import type { FilterOptions } from '../types';
 import { calculateTaskProgress } from '../utils/progressCalculator';
 import { getTaskDisplayProgress } from '../utils/taskProgressDisplay';
-import { getTaskStatusBadgeVariant, getTaskStatusLabel } from '../utils/taskStatusDisplay';
+import { getTaskStatusBadgeVariant, getTaskStatusLabel, isResubmissionWorkflowStatus, pickTaskUpdateStatus } from '../utils/taskStatusDisplay';
 import {
   getTaskReworkCount,
   getReworkReviewSubLabel,
@@ -35,17 +37,20 @@ import {
 import { taskService, stageService, teamService, projectService, teamProjectService, skillService, gradeService, bookService, unitService, lessonService } from '../services/apiService';
 import { TaskSearchFilters, TaskFilters } from './TaskSearchFilters';
 import { BulkUploadModal } from './BulkUploadModal';
+import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
 import { TaskExportButton } from './TaskExportButton';
 import { FlagEmployeeModal } from './modals/FlagEmployeeModal';
 import { Flag } from 'lucide-react';
 import { loadTaskManagerState, saveTaskManagerState } from '../utils/taskFilterPersistence';
+import { KanbanSkeleton } from './KanbanSkeleton';
+import { TaskStatSkeletonGrid } from './ui/TaskStatSkeleton';
+import { useDashboardSummary, invalidateSummaryCache } from '../hooks/useDashboardSummary';
+import type { SummaryFilterParams } from '../hooks/useDashboardSummary';
 import {
   getTaskManagerReferenceCache,
   setTaskManagerReferenceCache,
   isTasksSessionInitialized,
   markTasksSessionInitialized,
-  getAllTasksCache,
-  setAllTasksCache,
   buildTaskStatsCacheKey,
   TASKS_LIST_REFRESH_EVENT,
 } from '../utils/taskManagerCache';
@@ -55,6 +60,11 @@ import {
   computeNeedsAllTasks,
   type TaskListQueryState,
 } from '../utils/taskListFetch';
+
+// Lazy-load AdminKanbanView — only bundled when the user switches to Kanban view
+const AdminKanbanView = lazy(() =>
+  import('./AdminKanbanView').then((m) => ({ default: m.AdminKanbanView }))
+);
 
 const referenceCacheOnMount = getTaskManagerReferenceCache('');
 const sessionAlreadyInitialized = isTasksSessionInitialized();
@@ -97,11 +107,26 @@ function TaskStatCard({
   active,
   onClick,
 }: Omit<TaskStatCardConfig, 'key' | 'value'> & { value: number }) {
+  // Derive a ring color from the accent bar color for active state
+  const activeRingClass = accent.includes('red')
+    ? 'ring-2 ring-red-400/70 border-red-200 shadow-md'
+    : accent.includes('blue')
+    ? 'ring-2 ring-blue-400/70 border-blue-200 shadow-md'
+    : accent.includes('emerald')
+    ? 'ring-2 ring-emerald-400/70 border-emerald-200 shadow-md'
+    : accent.includes('amber')
+    ? 'ring-2 ring-amber-400/70 border-amber-200 shadow-md'
+    : accent.includes('yellow')
+    ? 'ring-2 ring-yellow-400/70 border-yellow-200 shadow-md'
+    : accent.includes('slate')
+    ? 'ring-2 ring-slate-400/70 border-slate-200 shadow-md'
+    : 'ring-2 ring-indigo-400/70 border-indigo-200 shadow-md';
+
   const className = [
     'relative w-full rounded-xl border bg-white p-4 sm:p-5 text-left',
     'shadow-sm transition-[box-shadow,transform,border-color] duration-200 ease-out',
     onClick ? 'cursor-pointer hover:shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'hover:shadow-md',
-    active ? 'ring-2 ring-red-400/70 border-red-200 shadow-md' : 'border-gray-200/90',
+    active ? activeRingClass : 'border-gray-200/90',
   ].join(' ');
 
   const content = (
@@ -123,7 +148,7 @@ function TaskStatCard({
 
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className={className} title="Toggle overdue-only filter">
+      <button type="button" onClick={onClick} className={className} title={`Filter by ${label}`}>
         {content}
       </button>
     );
@@ -206,6 +231,25 @@ export function TaskManager() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
 
+  // View toggle: list (default) vs kanban
+  const [taskView, setTaskView] = useState<'list' | 'kanban'>(() => {
+    try {
+      const saved = sessionStorage.getItem('admin_task_view');
+      return saved === 'kanban' ? 'kanban' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
+
+  const handleSetTaskView = useCallback((view: 'list' | 'kanban') => {
+    setTaskView(view);
+    try {
+      sessionStorage.setItem('admin_task_view', view);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // Unified filter state (search is debounced inside TaskSearchFilters)
   const [filters, setFilters] = useState<TaskFilters>(() =>
     isAdminUser ? initialUi.filters : sanitizeAssigneeFilters(initialUi.filters)
@@ -243,6 +287,8 @@ export function TaskManager() {
   const [loading, setLoading] = useState(!sessionAlreadyInitialized);
   const [error, setError] = useState<string | null>(null);
   const [onlyOverdue, setOnlyOverdue] = useState(initialUi.onlyOverdue);
+  // Active stat filter: when a KPI card is clicked, filter the list to show only matching tasks
+  const [activeStatFilter, setActiveStatFilter] = useState<'total' | 'inProgress' | 'completed' | 'notStarted' | 'underReview' | 'overdue' | null>(null);
   // Loading state for project-specific stages in top-level filters
   const [loadingProjectStages, setLoadingProjectStages] = useState(false);
   
@@ -251,12 +297,34 @@ export function TaskManager() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalTasks, setTotalTasks] = useState(0);
   const [pageSize, setPageSize] = useState(persistedState?.pageSize ?? 10);
-  const [allTasks, setAllTasks] = useState<any[]>(() => getAllTasksCache(statsCacheKey) ?? []); // For statistics
 
-  // Reset stats when the logged-in user changes (e.g. admin → employee)
-  useEffect(() => {
-    setAllTasks(getAllTasksCache(statsCacheKey) ?? []);
-  }, [statsCacheKey]);
+  // ─── Dashboard Summary (replaces allTasks loop) ────────────────────────────
+  // Build filter params for the summary endpoint — mirrors what the table sends,
+  // but omits status/priority/activeStatFilter so the KPI cards always show
+  // global counts for the current project/team/assignee scope.
+  const summaryFilterParams = useMemo((): SummaryFilterParams => {
+    const p: SummaryFilterParams = {};
+    if (selectedProject && selectedProject !== 'all') p.project_id = selectedProject;
+    if (selectedTeam && selectedTeam !== 'all') p.team_id = selectedTeam;
+    if (selectedAssignees.length === 1) p.assignee_id = selectedAssignees[0];
+    else if (selectedAssignees.length > 1) p.assigneeIdIn = selectedAssignees.join(',');
+    if (selectedStage && selectedStage !== 'all') p.stage_id = selectedStage;
+    if (dateRangeStart) p.dateRangeStart = dateRangeStart;
+    if (dateRangeEnd) p.dateRangeEnd = dateRangeEnd;
+    if (debouncedSearch) p.search = debouncedSearch;
+    return p;
+  }, [selectedProject, selectedTeam, selectedAssignees, selectedStage, dateRangeStart, dateRangeEnd, debouncedSearch]);
+
+  const {
+    summary: dashboardSummary,
+    loading: summaryLoading,
+    refresh: refreshSummary,
+  } = useDashboardSummary(isAuthenticated() ? summaryFilterParams : {});
+
+  // Kanban view — full unfiltered (by page) dataset matching current filters
+  const [kanbanTasks, setKanbanTasks] = useState<any[]>([]);
+  const [kanbanLoading, setKanbanLoading] = useState(false);
+  const kanbanFetchGenRef = useRef(0);
   
   // Task selection state for bulk operations
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
@@ -282,6 +350,7 @@ export function TaskManager() {
       dateRangeEnd,
       debouncedSearch,
       onlyOverdue,
+      activeStatFilter,
     }),
     [
       sortField,
@@ -299,6 +368,7 @@ export function TaskManager() {
       dateRangeEnd,
       debouncedSearch,
       onlyOverdue,
+      activeStatFilter,
     ]
   );
 
@@ -423,24 +493,6 @@ export function TaskManager() {
         setTotalTasks(applied.totalTasks);
         setTotalPages(applied.totalPages);
 
-        // Statistics dataset — scoped per user via statsCacheKey
-        const cachedStats = getAllTasksCache(statsCacheKey);
-        if (!cachedStats) {
-          try {
-            const allTasksResponse = await taskService.getAll({ all: 'true' });
-            if (generation !== fetchGenerationRef.current) return;
-            const allTasksList = allTasksResponse.data || allTasksResponse || [];
-            setAllTasks(allTasksList);
-            setAllTasksCache(statsCacheKey, allTasksList);
-          } catch {
-            const fallback = fetchAll && applied.tasks.length > 0 ? applied.tasks : [];
-            setAllTasks(fallback);
-            setAllTasksCache(statsCacheKey, fallback);
-          }
-        } else {
-          setAllTasks(cachedStats);
-        }
-
         setError(null);
       } catch (err: any) {
         if (generation !== fetchGenerationRef.current) return;
@@ -455,7 +507,7 @@ export function TaskManager() {
     };
 
     fetchTasks();
-  }, [user, taskListQueryState, pageSize, statsCacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user, taskListQueryState, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Single reusable refresh — same fetch rules as main effect (fixes page-2 empty after back)
   const refreshTasksList = useCallback(async () => {
@@ -471,23 +523,72 @@ export function TaskManager() {
     }
   }, [taskListQueryState, pageSize]);
 
-  // Lightweight refresh when returning from task detail (list + stats, no full remount)
+  // Reusable kanban refresh — used by both the scheduled effect and the event listener.
+  const refreshKanbanTasks = useCallback(async () => {
+    if (!isAuthenticated()) return;
+    const generation = ++kanbanFetchGenRef.current;
+    try {
+      // Build a stripped-down query state for the kanban fetch:
+      // status = 'all', no priorities, no activeStatFilter, no onlyOverdue —
+      // so the backend returns tasks of every status and the bucket classifier
+      // distributes them correctly across the columns.
+      const kanbanQueryState: TaskListQueryState = {
+        ...taskListQueryState,
+        selectedStatus: 'all',
+        selectedPriorities: [],
+        activeStatFilter: null,
+        onlyOverdue: false,
+        // pagination irrelevant — we always fetch all
+        currentPage: 1,
+        pageSize: 9999,
+      };
+
+      const { params } = buildTaskListFetchParams(kanbanQueryState);
+      const kanbanParams: Record<string, string | number> = { ...params, all: 'true' };
+      delete kanbanParams.page;
+      delete kanbanParams.limit;
+      // Ensure status is not sent (strip any status param from the result)
+      delete kanbanParams.status;
+
+      const res = await taskService.getAll(kanbanParams);
+      if (generation !== kanbanFetchGenRef.current) return;
+      const data: any[] = Array.isArray(res) ? res : res?.data ?? [];
+      setKanbanTasks(data);
+    } catch (err) {
+      console.error('Failed to fetch kanban tasks:', err);
+    }
+  }, [taskListQueryState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lightweight refresh when returning from task detail (list + stats, no full remount).
+  // Also refreshes the kanban dataset so status changes (e.g. approve → completed) are
+  // reflected immediately without requiring a manual page reload.
   useEffect(() => {
     const handleTasksListRefresh = async () => {
       await refreshTasksList();
-      try {
-        const allRes = await taskService.getAll({ all: 'true' });
-        const allTasksList = allRes.data || allRes || [];
-        setAllTasks(allTasksList);
-        setAllTasksCache(statsCacheKey, allTasksList);
-      } catch {
-        // keep existing stats on failure
+      // Refresh kanban board data so status changes show up immediately
+      if (taskView === 'kanban') {
+        await refreshKanbanTasks();
       }
+      // Also invalidate the dashboard summary cache so KPI counts refresh
+      invalidateSummaryCache();
+      refreshSummary();
     };
     const listener = () => { void handleTasksListRefresh(); };
     window.addEventListener(TASKS_LIST_REFRESH_EVENT, listener);
     return () => window.removeEventListener(TASKS_LIST_REFRESH_EVENT, listener);
-  }, [refreshTasksList, statsCacheKey]);
+  }, [refreshTasksList, refreshKanbanTasks, refreshSummary, taskView]);
+
+  // Kanban view — fetch ALL tasks matching current filters (no pagination) whenever
+  // the user is in kanban mode or switches to it.
+  // IMPORTANT: For kanban we intentionally strip status/priority/activeStatFilter from
+  // the server query — the kanban board classifies tasks into buckets itself, so we need
+  // ALL statuses. We only keep scope filters: project, team, assignees, search, dateRange.
+  useEffect(() => {
+    if (taskView !== 'kanban') return;
+    setKanbanLoading(true);
+    refreshKanbanTasks().finally(() => setKanbanLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskView, taskListQueryState]);
 
   // Fetch stages for the selected project's category (top-level filters)
   const fetchProjectStagesForProject = async (projectId: string) => {
@@ -536,7 +637,7 @@ export function TaskManager() {
     if (state.filters && Object.keys(state.filters).length > 0) {
       if (state.filters.activeOnly) {
         const memberId = state.filters.teamMembers?.[0];
-        setFilters(sanitizeAssigneeFilters({
+        const nextFilters: TaskFilters = {
           search: '',
           status: 'active',
           priorities: [],
@@ -547,7 +648,8 @@ export function TaskManager() {
           assignees: isAdminUser && memberId ? [String(memberId)] : [],
           dateRangeStart: '',
           dateRangeEnd: '',
-        }));
+        };
+        setFilters(isAdminUser ? nextFilters : sanitizeAssigneeFilters(nextFilters));
         setOnlyOverdue(false);
         setCurrentPage(1);
       } else {
@@ -604,6 +706,8 @@ export function TaskManager() {
   // re-creating its own internal callbacks on every parent render.
   const handleFiltersChange = useCallback((next: TaskFilters) => {
     setFilters(isAdminUser ? next : sanitizeAssigneeFilters(next));
+    // Clear stat card filter when user manually changes the status dropdown
+    setActiveStatFilter(null);
   }, [isAdminUser]);
 
   // Persist filters, sort, and pagination so they survive navigating to task detail and back
@@ -622,6 +726,13 @@ export function TaskManager() {
     const endDate = task.end_date || task.endDate;
     if (!endDate) return false;
 
+    // Exclude statuses where the assignee has already submitted — not overdue
+    // from the assignee's perspective (under-review, resubmitted, completed).
+    const status = (task.status || '').toLowerCase().replace(/_/g, '-');
+    if (status === 'completed' || status === 'under-review' || status === 'resubmitted') {
+      return false;
+    }
+
     // Get today's date at midnight (start of day)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -630,8 +741,8 @@ export function TaskManager() {
     const dueDate = new Date(endDate);
     dueDate.setHours(0, 0, 0, 0);
 
-    // Task is overdue if due date is before today AND not completed
-    return dueDate < today && task.status !== 'completed';
+    // Task is overdue if due date is before today
+    return dueDate < today;
   }, []);
 
   const isDueToday = useCallback((task: Task) => {
@@ -684,6 +795,14 @@ export function TaskManager() {
     if (state.filters?.dueTomorrow && !isDueTomorrow(task)) return false;
     if (state.filters?.dueThisWeek && !isDueThisWeek(task)) return false;
     if (onlyOverdue && !isOverdue(task)) return false;
+
+    // Apply KPI card stat filter (client-side)
+    if (activeStatFilter === 'overdue' && !isOverdue(task)) return false;
+    if (activeStatFilter === 'inProgress' && task.status !== 'in-progress') return false;
+    if (activeStatFilter === 'completed' && task.status !== 'completed') return false;
+    if (activeStatFilter === 'notStarted' && task.status !== 'not-started') return false;
+    if (activeStatFilter === 'underReview' && task.status !== 'under-review') return false;
+    // 'total' shows everything — no extra filter needed
     
     // Apply status filter for overdue / active (client-side)
     if (selectedStatus === 'overdue' && !isOverdue(task)) return false;
@@ -736,7 +855,58 @@ export function TaskManager() {
     }
 
     return true;
-  }), [tasks, state.filters, onlyOverdue, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+  }), [tasks, state.filters, onlyOverdue, activeStatFilter, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+
+  // Apply client-side filters to the kanban dataset.
+  // NOTE: Status / priority / activeStatFilter / onlyOverdue are intentionally
+  // excluded here — the kanban board classifies every task into its own bucket,
+  // so filtering by status would empty out columns the user hasn't filtered for.
+  // Only scope-narrowing filters are applied: stage, date range, due-date preset,
+  // and nav-dashboard quick-filters (overdue/dueToday/etc.).
+  const kanbanFilteredTasks = useMemo(() => kanbanTasks.filter((task: any) => {
+    // Navigation quick-filters from dashboard
+    if (state.filters?.overdue && !isOverdue(task)) return false;
+    if (state.filters?.dueToday && !isDueToday(task)) return false;
+    if (state.filters?.dueTomorrow && !isDueTomorrow(task)) return false;
+    if (state.filters?.dueThisWeek && !isDueThisWeek(task)) return false;
+
+    // Stage filter
+    if (selectedStage !== 'all') {
+      const taskStageIdNum = task.category_stage_id ? parseInt(task.category_stage_id.toString()) : null;
+      if (taskStageIdNum !== parseInt(selectedStage)) return false;
+    }
+
+    // Custom due-date range
+    if (hasDateRange) {
+      const taskEndDate = task.end_date || task.endDate;
+      if (!taskEndDate) return false;
+      const dueDateStr = new Date(taskEndDate).toISOString().split('T')[0];
+      if (dateRangeStart && dueDateStr < dateRangeStart) return false;
+      if (dateRangeEnd && dueDateStr > dateRangeEnd) return false;
+    }
+
+    // Due-date preset filter
+    if (selectedDueDate !== 'all') {
+      const taskEndDate = task.end_date || task.endDate;
+      if (!taskEndDate) return false;
+      switch (selectedDueDate) {
+        case 'overdue': if (!isOverdue(task)) return false; break;
+        case 'today': if (!isDueToday(task)) return false; break;
+        case 'tomorrow': if (!isDueTomorrow(task)) return false; break;
+        case 'this-week': if (!isDueThisWeek(task)) return false; break;
+        case 'next-week': {
+          const today = new Date(); today.setHours(0,0,0,0);
+          const nextWeekStart = new Date(); nextWeekStart.setDate(today.getDate() + 7); nextWeekStart.setHours(0,0,0,0);
+          const nextWeekEnd = new Date(); nextWeekEnd.setDate(today.getDate() + 14); nextWeekEnd.setHours(0,0,0,0);
+          const dueDate = new Date(taskEndDate); dueDate.setHours(0,0,0,0);
+          if (dueDate < nextWeekStart || dueDate > nextWeekEnd || task.status === 'completed') return false;
+          break;
+        }
+        case 'no-due-date': if (taskEndDate) return false; break;
+      }
+    }
+    return true;
+  }), [kanbanTasks, state.filters, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
 
   // Client-side filters (active, overdue, assignee, etc.) shrink the fetched list — paginate that result.
   const {
@@ -818,7 +988,7 @@ export function TaskManager() {
           description: taskData.description,
           project_id: parseInt(taskData.projectId || '1'),
           category_stage_id: parseInt(taskData.stageId || ''),
-          status: taskData.status,
+          ...pickTaskUpdateStatus(taskData.status),
           priority: taskData.priority,
           start_date: taskData.startDate,
           end_date: taskData.endDate,
@@ -837,6 +1007,9 @@ export function TaskManager() {
 
         await taskService.update(editingTask.id, updateData);
         await refreshTasksList();
+        // Invalidate KPI summary after task update
+        invalidateSummaryCache();
+        refreshSummary();
       } else {
         // Build component path for display
         let componentPath = '';
@@ -895,7 +1068,9 @@ export function TaskManager() {
 
         await taskService.create(createData);
         await refreshTasksList();
-
+        // Invalidate KPI summary after task creation
+        invalidateSummaryCache();
+        refreshSummary();
       }
 
       setIsCreateModalOpen(false);
@@ -947,6 +1122,9 @@ export function TaskManager() {
       // Delete the task
       await taskService.delete(task.id);
       await refreshTasksList();
+      // Invalidate KPI summary after deletion
+      invalidateSummaryCache();
+      refreshSummary();
 
     } catch (err: any) {
       console.error('❌ Delete task error:', err);
@@ -959,6 +1137,8 @@ export function TaskManager() {
       setError(null);
       await taskService.reviewTask(task.id, 'approve');
       await refreshTasksList();
+      invalidateSummaryCache();
+      refreshSummary();
 
     } catch (err: any) {
       console.error('❌ Approve task error:', err);
@@ -971,6 +1151,8 @@ export function TaskManager() {
       setError(null);
       await taskService.reviewTask(task.id, 'deny');
       await refreshTasksList();
+      invalidateSummaryCache();
+      refreshSummary();
 
     } catch (err: any) {
       console.error('❌ Deny task error:', err);
@@ -1046,6 +1228,9 @@ export function TaskManager() {
       setSelectedTasks(new Set());
       setIsBulkDeleteModalOpen(false);
       await refreshTasksList();
+      // Invalidate KPI summary — bulk delete changes all counts
+      invalidateSummaryCache();
+      refreshSummary();
 
     } catch (err: any) {
       console.error('❌ Bulk delete error:', err);
@@ -1060,45 +1245,17 @@ export function TaskManager() {
     }
   };
 
-  // Calculate task statistics — assignees use only their scoped allTasks dataset
-  const taskStats = useMemo(() => {
-    const statsSource = isAdminUser
-      ? (allTasks.length > 0 ? allTasks : tasks)
-      : allTasks;
-    const statsTotal = isAdminUser
-      ? (allTasks.length > 0 ? allTasks.length : totalTasks)
-      : (allTasks.length > 0 ? allTasks.length : totalTasks);
-
-    if (statsSource.length > 0 || statsTotal > 0) {
-      return {
-        total: statsTotal,
-        notStarted: statsSource.filter((t: any) => t.status === 'not-started').length,
-        inProgress: statsSource.filter((t: any) => t.status === 'in-progress').length,
-        underReview: statsSource.filter((t: any) => t.status === 'under-review').length,
-        completed: statsSource.filter((t: any) => t.status === 'completed').length,
-        overdue: statsSource.filter((t: any) => {
-          const endDate = t.end_date || t.endDate;
-          if (!endDate || t.status === 'completed') return false;
-
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          const dueDate = new Date(endDate);
-          dueDate.setHours(0, 0, 0, 0);
-
-          return dueDate < today;
-        }).length,
-      };
-    }
-
-    return {
-      total: totalTasks,
-      notStarted: 0,
-      inProgress: 0,
-      underReview: 0,
-      completed: 0,
-      overdue: 0,
-    };
-  }, [allTasks, tasks, totalTasks, isAdminUser]);
+  // Calculate task statistics — now sourced from the dedicated summary API,
+  // NOT from iterating a full allTasks array. Falls back to totalTasks from
+  // pagination when the summary is still loading.
+  const taskStats = useMemo(() => ({
+    total: dashboardSummary.totalTasks || totalTasks,
+    notStarted: dashboardSummary.notStarted,
+    inProgress: dashboardSummary.inProgress,
+    underReview: dashboardSummary.underReview,
+    completed: dashboardSummary.completed,
+    overdue: dashboardSummary.overdue,
+  }), [dashboardSummary, totalTasks]);
 
   // Debug logging for statistics
 
@@ -1170,7 +1327,10 @@ export function TaskManager() {
       </div>
 
 
-      {/* Task Stats */}
+      {/* Task Stats — skeleton while summary is loading, then live counts */}
+      {summaryLoading && !dashboardSummary.totalTasks ? (
+        <TaskStatSkeletonGrid count={6} />
+      ) : (
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4 w-full min-w-0">
         {([
           {
@@ -1181,6 +1341,8 @@ export function TaskManager() {
             iconBg: 'bg-slate-100',
             iconColor: 'text-slate-600',
             accent: 'bg-slate-400',
+            active: activeStatFilter === 'total',
+            onClick: () => { setActiveStatFilter(prev => prev === 'total' ? null : 'total'); setCurrentPage(1); },
           },
           {
             key: 'inProgress',
@@ -1190,6 +1352,8 @@ export function TaskManager() {
             iconBg: 'bg-blue-50',
             iconColor: 'text-blue-600',
             accent: 'bg-blue-500',
+            active: activeStatFilter === 'inProgress',
+            onClick: () => { setActiveStatFilter(prev => prev === 'inProgress' ? null : 'inProgress'); setCurrentPage(1); },
           },
           {
             key: 'completed',
@@ -1199,6 +1363,8 @@ export function TaskManager() {
             iconBg: 'bg-emerald-50',
             iconColor: 'text-emerald-600',
             accent: 'bg-emerald-500',
+            active: activeStatFilter === 'completed',
+            onClick: () => { setActiveStatFilter(prev => prev === 'completed' ? null : 'completed'); setCurrentPage(1); },
           },
           {
             key: 'notStarted',
@@ -1208,6 +1374,8 @@ export function TaskManager() {
             iconBg: 'bg-amber-50',
             iconColor: 'text-amber-600',
             accent: 'bg-amber-500',
+            active: activeStatFilter === 'notStarted',
+            onClick: () => { setActiveStatFilter(prev => prev === 'notStarted' ? null : 'notStarted'); setCurrentPage(1); },
           },
           {
             key: 'underReview',
@@ -1217,6 +1385,8 @@ export function TaskManager() {
             iconBg: 'bg-yellow-50',
             iconColor: 'text-yellow-600',
             accent: 'bg-yellow-500',
+            active: activeStatFilter === 'underReview',
+            onClick: () => { setActiveStatFilter(prev => prev === 'underReview' ? null : 'underReview'); setCurrentPage(1); },
           },
           {
             key: 'overdue',
@@ -1226,12 +1396,71 @@ export function TaskManager() {
             iconBg: 'bg-red-50',
             iconColor: 'text-red-600',
             accent: 'bg-red-500',
-            active: onlyOverdue,
-            onClick: () => setOnlyOverdue((prev) => !prev),
+            active: activeStatFilter === 'overdue' || onlyOverdue,
+            onClick: () => {
+              if (onlyOverdue) {
+                setOnlyOverdue(false);
+                setActiveStatFilter(prev => prev === 'overdue' ? null : 'overdue');
+              } else {
+                setActiveStatFilter(prev => prev === 'overdue' ? null : 'overdue');
+              }
+              setCurrentPage(1);
+            },
           },
         ] as TaskStatCardConfig[]).map((stat) => (
           <TaskStatCard key={stat.key} {...stat} />
         ))}
+      </div>
+      )}
+
+      {/* Filters */}
+      {/* View Toggle */}
+      <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-lg font-semibold text-gray-900 tracking-tight">
+            {taskView === 'kanban' ? 'Kanban Board' : 'All Tasks'}
+          </h2>
+          <p className="text-xs text-gray-400 font-medium">
+            {taskView === 'kanban'
+              ? 'Visual board — tasks organised by status'
+              : 'List view — sortable and filterable task table'}
+          </p>
+        </div>
+        {/* Segmented control */}
+        <div
+          className="flex items-center p-1 rounded-xl border border-gray-200 bg-gray-100/80 shadow-sm"
+          role="group"
+          aria-label="Task view toggle"
+        >
+          <button
+            onClick={() => handleSetTaskView('list')}
+            title="List view"
+            aria-pressed={taskView === 'list'}
+            className={[
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
+              taskView === 'list'
+                ? 'bg-white shadow text-gray-800 border border-gray-200/80'
+                : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            <ListIcon className="w-3.5 h-3.5" aria-hidden />
+            List
+          </button>
+          <button
+            onClick={() => handleSetTaskView('kanban')}
+            title="Kanban board view"
+            aria-pressed={taskView === 'kanban'}
+            className={[
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
+              taskView === 'kanban'
+                ? 'bg-white shadow text-blue-700 border border-blue-200/80'
+                : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" aria-hidden />
+            Kanban
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -1292,20 +1521,54 @@ export function TaskManager() {
             </div>
 
             {selectedTasks.size > 0 && (
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => setIsBulkDeleteModalOpen(true)}
-                className="bg-red-600 hover:bg-red-700 text-white w-full sm:w-auto flex-shrink-0"
-              >
-                <Trash2 className="w-4 h-4 mr-2" />
-                Delete Selected ({selectedTasks.size})
-              </Button>
+              <BulkTaskSelectionActions
+                selectedTaskIds={Array.from(selectedTasks)}
+                selectedTaskNames={Array.from(selectedTasks).map((taskId) => {
+                  const task = filteredTasks.find((t) => t.id.toString() === taskId);
+                  return task?.name || `Task ${taskId}`;
+                })}
+                teamMembers={teamMembers}
+                onSuccess={async () => {
+                  setSelectedTasks(new Set());
+                  await refreshTasksList();
+                  invalidateSummaryCache();
+                  refreshSummary();
+                }}
+                onDelete={() => setIsBulkDeleteModalOpen(true)}
+              />
             )}
           </div>
         </div>
       )}
 
+      {/* Kanban View — lazy-loaded; KanbanSkeleton shown while chunk or data loads */}
+      {taskView === 'kanban' && (
+        <Suspense fallback={<KanbanSkeleton />}>
+          {kanbanLoading ? (
+            <KanbanSkeleton />
+          ) : (
+            <AdminKanbanView
+              tasks={kanbanFilteredTasks}
+              onView={(task) => openTaskDetail(task.id)}
+              onEdit={(task) => handleEditTask(task)}
+              onApprove={(task) => handleApproveTask(task)}
+              onDeny={(task) => handleDenyTask(task)}
+              onFlag={(task) => {
+                // Flag the first assignee of the task
+                const assignee = task.assigneeDetails?.[0];
+                if (assignee) {
+                  handleOpenFlagModal({ id: assignee.id, name: assignee.name }, task);
+                }
+              }}
+              onDelete={(task) => handleDeleteTask(task)}
+            />
+          )}
+        </Suspense>
+      )}
+
+      {/* List View */}
+      {taskView === 'list' && (
+        <>
             {/* Tasks List */}
       <Card className="min-w-0 w-full overflow-hidden">
         <CardContent className="p-0">
@@ -1799,6 +2062,8 @@ export function TaskManager() {
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
 
       {/* Create Task Modal */}
       <CreateTaskModal
@@ -1887,20 +2152,11 @@ export function TaskManager() {
         isOpen={isBulkUploadModalOpen}
         onClose={() => setIsBulkUploadModalOpen(false)}
         onSuccess={async () => {
-          // Refresh task list after successful upload
-          const filters: any = { sort: sortField, order: sortOrder, page: currentPage, limit: pageSize };
-          if (selectedStatus !== 'all') filters.status = selectedStatus;
-          if (selectedPriorities.length === 1) filters.priority = selectedPriorities[0];
-          else if (selectedPriorities.length > 1) filters.priorityIn = selectedPriorities.join(',');
-          if (selectedStage !== 'all') filters.stage_id = selectedStage;
-          else if (selectedProject !== 'all') filters.project_id = selectedProject;
-          if (debouncedSearch) filters.search = debouncedSearch;
-          const tasksResponse = await taskService.getAll(filters);
-          if (tasksResponse?.data) {
-            setTasks(tasksResponse.data);
-            setTotalTasks(tasksResponse.pagination?.total || 0);
-            setTotalPages(tasksResponse.pagination?.pages || 1);
-          }
+          // Refresh task list after successful bulk upload
+          await refreshTasksList();
+          // Invalidate KPI summary — bulk upload changes counts
+          invalidateSummaryCache();
+          refreshSummary();
         }}
         projects={projects}
         teamMembers={teamMembers}
@@ -2518,21 +2774,32 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Status
             </label>
-            <select
-              value={formData.status}
-              onChange={(e) => {
-                const newStatus = e.target.value as TaskStatus;
-                setFormData({ ...formData, status: newStatus });
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="not-started">Not Started</option>
-              <option value="in-progress">In Progress</option>
-              <option value="under-review">Under Review</option>
-              <option value="completed">Completed</option>
-              <option value="blocked">Blocked</option>
-              <option value="on-hold">On Hold</option>
-            </select>
+            {editingTask && isResubmissionWorkflowStatus(editingTask.status) ? (
+              <div className="px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                <p className="text-sm font-medium text-gray-900">
+                  {getTaskStatusLabel(editingTask.status)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Rework status is preserved when you save other fields.
+                </p>
+              </div>
+            ) : (
+              <select
+                value={formData.status}
+                onChange={(e) => {
+                  const newStatus = e.target.value as TaskStatus;
+                  setFormData({ ...formData, status: newStatus });
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="not-started">Not Started</option>
+                <option value="in-progress">In Progress</option>
+                <option value="under-review">Under Review</option>
+                <option value="completed">Completed</option>
+                <option value="blocked">Blocked</option>
+                <option value="on-hold">On Hold</option>
+              </select>
+            )}
           </div>
 
           <div>

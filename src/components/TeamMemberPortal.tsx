@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   CheckSquare,
   Clock,
@@ -28,6 +28,9 @@ import {
   Menu,
   ArrowLeft,
   RotateCcw,
+  LayoutGrid,
+  List as ListIcon,
+  Eye,
 } from 'lucide-react';
 import {
   belongsInOverdueSection,
@@ -57,6 +60,7 @@ import { teamTaskService, teamProjectService, teamService, notificationService }
 import { TeamNotifications } from './TeamNotifications';
 import { TeamTaskDetail } from './TeamTaskDetail';
 import { ResubmissionDeadlineBanner } from './ResubmissionDeadlineBanner';
+import { KanbanView } from './KanbanView';
 
 import type { Task, User as UserType } from '../types';
 import notificationServiceRealTime from '../services/notificationService';
@@ -91,7 +95,7 @@ const NAV_ITEMS = [
   { key: 'top-performers', label: 'Top Performers', icon: Trophy,          permission: 'view_top_performers', alwaysVisible: false, pmOnly: false },
   { key: 'analytics',      label: 'Analytics',      icon: BarChart3,       permission: 'view_analytics',      alwaysVisible: false, pmOnly: false },
   { key: 'core-analytics', label: 'Core Analytics', icon: TrendingUp,      permission: 'view_analytics',      alwaysVisible: false, pmOnly: false },
-  { key: 'notifications',  label: 'Activities',     icon: Bell,            permission: 'view_notifications',  alwaysVisible: false, pmOnly: false },
+  { key: 'notifications',  label: 'Manage Extensions', icon: Bell,            permission: 'view_notifications',  alwaysVisible: false, pmOnly: false },
 ];
 
 export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
@@ -131,12 +135,34 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   const [showAllOverdueTasks, setShowAllOverdueTasks] = useState(false);
   const [showAllCompletedTasks, setShowAllCompletedTasks] = useState(false);
   const [showAllUpcomingTasks, setShowAllUpcomingTasks] = useState(false);
+  const [showAllUnderReviewTasks, setShowAllUnderReviewTasks] = useState(false);
+
+  // KPI card click: highlights and scrolls to the matching section
+  const [activeStatFilter, setActiveStatFilter] = useState<'active' | 'underReview' | 'overdue' | 'upcoming' | 'completed' | 'resubmitted' | null>(null);
+  const sectionRefs = {
+    active: useRef<HTMLDivElement>(null),
+    underReview: useRef<HTMLDivElement>(null),
+    overdue: useRef<HTMLDivElement>(null),
+    upcoming: useRef<HTMLDivElement>(null),
+    completed: useRef<HTMLDivElement>(null),
+    resubmitted: useRef<HTMLDivElement>(null),
+  };
 
   // Active Tasks search & sort
   const [activeTaskSearch, setActiveTaskSearch] = useState('');
   const [activeTaskSort, setActiveTaskSort] = useState<'default' | 'priority' | 'due-date' | 'progress' | 'name' | 'recently-assigned'>('default');
   const [activeTaskSortOpen, setActiveTaskSortOpen] = useState(false);
   const [activeTaskPriorityFilter, setActiveTaskPriorityFilter] = useState<'all' | 'urgent' | 'high' | 'medium' | 'low'>('all');
+
+  // Dashboard layout toggle: list (existing) vs kanban (new)
+  const [dashboardView, setDashboardView] = useState<'list' | 'kanban'>(() => {
+    try {
+      const saved = sessionStorage.getItem('team_dashboard_view');
+      return saved === 'kanban' ? 'kanban' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
 
   // Close sort dropdown on outside click
   useEffect(() => {
@@ -303,6 +329,11 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
     finally { setRefreshing(false); }
   };
 
+  const handleSetDashboardView = (view: 'list' | 'kanban') => {
+    setDashboardView(view);
+    try { sessionStorage.setItem('team_dashboard_view', view); } catch { /* ignore */ }
+  };
+
   const handleRequestExtension = (task: Task) => { setSelectedTask(task); setIsExtensionModalOpen(true); };
   const handleAddRemark = (task: Task) => { setSelectedTask(task); setIsRemarkModalOpen(true); };
   const handleViewTaskDetail = (task: Task) => { setSelectedTaskForDetail(task); };
@@ -344,6 +375,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
           showToast('Task submitted for review!', 'success');
         } else if (remarkType === 'skipped') {
           showToast('Task marked as skipped!', 'success');
+        } else if (remarkType === 'general' && selectedTask.status === 'not-started') {
+          showToast('Task marked as In Progress (50%).', 'success');
         } else {
           showToast('Remark added!', 'success');
         }
@@ -359,7 +392,9 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   };
 
   const isTaskOverdue = (task: Task) => {
-    if (!task.end_date || task.status === 'completed') return false;
+    const s = (task.status || '').toLowerCase().replace(/_/g, '-');
+    // Submitted tasks are pending admin/PM — never overdue from assignee's view
+    if (!task.end_date || s === 'completed' || s === 'under-review' || s === 'resubmitted') return false;
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const due = new Date(task.end_date); due.setHours(0, 0, 0, 0);
     return due < today;
@@ -372,15 +407,49 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
     return Math.round((due.getTime() - today.getTime()) / 86400000);
   };
 
-  const activeTasks = userTasks.filter(isActiveTaskForDashboard);
   const completedTasks = userTasks.filter(t => t.status === 'completed');
   const overdueTasks = userTasks.filter(t => belongsInOverdueSection(t, isTaskOverdue));
+
+  // Under Review tasks: submitted by the user, pending admin/PM approval
+  const underReviewTasks = userTasks.filter(t => {
+    const s = (t.status || '').toLowerCase().replace(/_/g, '-');
+    return s === 'under-review' || s === 'resubmitted';
+  });
+
   const completionRate = userTasks.length > 0 ? Math.round((completedTasks.length / userTasks.length) * 100) : 0;
+
+  // Resubmitted / rework tasks: returned/redo-requested/resubmitted with at least 1 rework
+  const resubmittedTasks = userTasks.filter(t => {
+    const s = (t.status || '').toLowerCase().replace(/_/g, '-');
+    return (s === 'returned' || s === 'redo-requested' || s === 'resubmitted') && getTaskReworkCount(t) > 0;
+  });
+
+  // On-hold tasks – shown separately below kanban
+  const onHoldTasks = userTasks.filter(t => isOnHoldTask(t));
+
+  // Active tasks: work in progress, not yet submitted to admin/PM.
+  // Explicitly exclude: completed, on-hold, under-review, resubmitted (those go to their own sections)
+  const activeTasks = userTasks.filter(t => {
+    if (t.status === 'completed') return false;
+    if (isOnHoldTask(t)) return false;
+    const s = (t.status || '').toLowerCase().replace(/_/g, '-');
+    // Submitted tasks belong in Under Review, not Active
+    if (s === 'under-review' || s === 'resubmitted') return false;
+    // Rework tasks (returned/redo-requested with rework count) belong in their own section
+    if ((s === 'returned' || s === 'redo-requested') && getTaskReworkCount(t) > 0) return false;
+    return isActiveTaskForDashboard(t);
+  });
+
   const upcomingTasks = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     return userTasks
       .filter(t => {
         if (t.status === 'completed') return false;
+        if (isOnHoldTask(t)) return false;
+        const s = (t.status || '').toLowerCase().replace(/_/g, '-');
+        // Submitted tasks belong in Under Review, not Upcoming
+        if (s === 'under-review' || s === 'resubmitted') return false;
+        if ((s === 'returned' || s === 'redo-requested' || s === 'resubmitted') && getTaskReworkCount(t) > 0) return false;
         if (!t.end_date) return false;
         const due = new Date(t.end_date); due.setHours(0, 0, 0, 0);
         return due >= today;
@@ -483,69 +552,147 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
     }
   };
 
-  // ── My Tasks view ──────────────────────────────────────────────────
+  // ── My Tasks view (List or Kanban) ────────────────────────────────
   const renderMyTasksView = () => (
     <div className="w-full px-6 py-8">
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      {/* Stats row — List view only */}
+      {dashboardView === 'list' && (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
         {[
-          { label: 'Active Tasks', value: activeTasks.length, icon: CheckSquare, border: 'border-gray-200', labelColor: 'text-gray-600', valueColor: 'text-gray-900' },
-          { label: 'Completed', value: completedTasks.length, icon: CheckCircle, border: 'border-gray-200', labelColor: 'text-gray-600', valueColor: 'text-gray-900' },
-          { label: 'Overdue', value: overdueTasks.length, icon: AlertTriangle, border: 'border-red-200', labelColor: 'text-red-600', valueColor: 'text-red-600' },
-          { label: 'Completion Rate', value: `${completionRate}%`, icon: TrendingUp, border: 'border-gray-200', labelColor: 'text-gray-600', valueColor: 'text-gray-900' },
-        ].map(({ label, value, icon: Icon, border, labelColor, valueColor }) => (
-          <Card key={label} className={`bg-white border ${border} shadow-sm`}>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className={`${labelColor} text-sm font-medium mb-1`}>{label}</p>
-                  <p className={`text-3xl font-bold ${valueColor}`}>{value}</p>
-                </div>
-                <Icon className={`w-8 h-8 ${labelColor === 'text-red-600' ? 'text-red-500' : 'text-gray-400'}`} />
+          { key: 'active' as const, label: 'Active', value: activeTasks.length, icon: CheckSquare, accent: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-100', activeBorder: 'border-indigo-400', activeRing: 'ring-2 ring-indigo-400/60' },
+          { key: 'underReview' as const, label: 'Under Review', value: underReviewTasks.length, icon: Eye, accent: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-100', activeBorder: 'border-orange-400', activeRing: 'ring-2 ring-orange-400/60' },
+          { key: 'overdue' as const, label: 'Overdue', value: overdueTasks.length, icon: AlertTriangle, accent: 'text-red-600', bg: 'bg-red-50', border: 'border-red-100', activeBorder: 'border-red-400', activeRing: 'ring-2 ring-red-400/60' },
+          { key: 'upcoming' as const, label: 'Upcoming', value: upcomingTasks.length, icon: Calendar, accent: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100', activeBorder: 'border-blue-400', activeRing: 'ring-2 ring-blue-400/60' },
+          { key: 'completed' as const, label: 'Completed', value: completedTasks.length, icon: CheckCircle, accent: 'text-green-600', bg: 'bg-green-50', border: 'border-green-100', activeBorder: 'border-green-400', activeRing: 'ring-2 ring-green-400/60' },
+          { key: 'resubmitted' as const, label: 'Resubmitted', value: resubmittedTasks.length, icon: RotateCcw, accent: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-100', activeBorder: 'border-amber-400', activeRing: 'ring-2 ring-amber-400/60' },
+        ].map(({ key, label, value, icon: Icon, accent, bg, border, activeBorder, activeRing }) => {
+          const isActive = activeStatFilter === key;
+          return (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                const next = isActive ? null : key;
+                setActiveStatFilter(next);
+                if (next && sectionRefs[next]?.current) {
+                  setTimeout(() => {
+                    sectionRefs[next]!.current!.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 50);
+                }
+              }}
+              title={isActive ? `Clear filter` : `Show only ${label} tasks`}
+              className={`flex items-center gap-3 p-4 rounded-xl ${bg} border ${isActive ? `${activeBorder} ${activeRing} shadow-md` : border} transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 cursor-pointer text-left w-full`}
+            >
+              <div className={`p-2 rounded-lg bg-white shadow-sm ${isActive ? 'shadow' : ''}`}>
+                <Icon className={`w-4 h-4 ${accent}`} />
               </div>
-            </CardContent>
-          </Card>
-        ))}
+              <div>
+                <p className="text-xs text-gray-500 font-medium">{label}</p>
+                <p className={`text-xl font-bold ${accent}`}>{value}</p>
+              </div>
+            </button>
+          );
+        })}
       </div>
-
-      {/* Performance Flags */}
-      {performanceFlags.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Flag className="w-5 h-5 text-gray-600" />
-              <span>Performance Flags ({performanceFlags.length})</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {[
-                { type: 'green', bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', label: 'Green Flags' },
-                { type: 'yellow', bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', label: 'Yellow Flags' },
-                { type: 'orange', bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', label: 'Orange Flags' },
-                { type: 'red', bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Red Flags' },
-              ].map(({ type, bg, border, text, label }) => (
-                <div key={type} className={`text-center p-4 ${bg} border ${border} rounded-lg cursor-pointer hover:opacity-80 transition-opacity`}
-                  onClick={() => handleFlagTypeClick(type)}>
-                  <div className={`text-2xl font-bold ${text} mb-1`}>{performanceFlags.filter(f => f.type === type).length}</div>
-                  <div className={`text-sm ${text} font-medium`}>{label}</div>
-                  <div className={`text-xs ${text} opacity-70 mt-1`}>Click to view</div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
       )}
 
-      {/* Task lists */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Left column: Active Tasks + Recent Completions */}
-        <div className="flex flex-col gap-8">
-        {/* Active */}
+      {/* Performance Flags — List view only */}
+      {dashboardView === 'list' && performanceFlags.length > 0 && (
+        <div className="mb-8 p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <Flag className="w-4 h-4 text-gray-500" />
+            <span className="text-sm font-semibold text-gray-700">Performance Flags</span>
+            <span className="ml-auto text-xs text-gray-400">{performanceFlags.length} total</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { type: 'green', bg: 'bg-green-50', border: 'border-green-200', dot: 'bg-green-500', text: 'text-green-700', label: 'Green' },
+              { type: 'yellow', bg: 'bg-yellow-50', border: 'border-yellow-200', dot: 'bg-yellow-400', text: 'text-yellow-700', label: 'Yellow' },
+              { type: 'orange', bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-500', text: 'text-orange-700', label: 'Orange' },
+              { type: 'red', bg: 'bg-red-50', border: 'border-red-200', dot: 'bg-red-500', text: 'text-red-700', label: 'Red' },
+            ].map(({ type, bg, border, dot, text, label }) => {
+              const count = performanceFlags.filter(f => f.type === type).length;
+              return (
+                <button key={type} onClick={() => handleFlagTypeClick(type)}
+                  className={`flex items-center gap-2.5 px-3 py-2.5 ${bg} border ${border} rounded-lg hover:opacity-80 transition-opacity text-left`}>
+                  <span className={`w-2.5 h-2.5 rounded-full ${dot} shrink-0`} />
+                  <span className={`text-sm font-semibold ${text}`}>{count}</span>
+                  <span className={`text-xs ${text} opacity-80`}>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* View toggle + section title */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-xl font-bold text-gray-900 tracking-tight">
+            {dashboardView === 'kanban' ? 'Kanban Board' : 'My Tasks'}
+          </h2>
+          <p className="text-xs text-gray-400 font-medium">
+            {dashboardView === 'kanban'
+              ? 'Visual task board — all your work at a glance'
+              : 'All tasks assigned to you'}
+          </p>
+        </div>
+        {/* Modern segmented control */}
+        <div
+          className="flex items-center p-1 rounded-xl border border-gray-200 bg-gray-100/80 shadow-sm"
+          role="group"
+          aria-label="Dashboard view toggle"
+        >
+          <button
+            onClick={() => handleSetDashboardView('list')}
+            title="List view"
+            aria-pressed={dashboardView === 'list'}
+            className={[
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
+              dashboardView === 'list'
+                ? 'bg-white shadow text-gray-800 border border-gray-200/80'
+                : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            <ListIcon className="w-3.5 h-3.5" aria-hidden />
+            List
+          </button>
+          <button
+            onClick={() => handleSetDashboardView('kanban')}
+            title="Kanban board view"
+            aria-pressed={dashboardView === 'kanban'}
+            className={[
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
+              dashboardView === 'kanban'
+                ? 'bg-white shadow text-blue-700 border border-blue-200/80'
+                : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" aria-hidden />
+            Kanban
+          </button>
+        </div>
+      </div>
+
+      {/* ── Kanban view ── */}
+      {dashboardView === 'kanban' && (
+        <KanbanView
+          tasks={userTasks}
+          onView={handleViewTaskDetail}
+          onAddRemark={handleAddRemark}
+          onRequestExtension={handleRequestExtension}
+        />
+      )}
+
+      {/* ── List view ── */}
+      {dashboardView === 'list' && (
+        <div className="flex flex-col gap-6">
+
+        {/* ── Row 1: Active Tasks — full width ── */}
+        <div ref={sectionRefs.active} className={`transition-all duration-300 rounded-xl ${activeStatFilter === 'active' ? 'ring-2 ring-indigo-400/60 shadow-lg' : ''}`}>
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              {/* Title */}
               <div className="flex items-center gap-2 shrink-0">
                 <CheckSquare className="w-5 h-5 text-gray-600" />
                 <span className="whitespace-nowrap">Active Tasks ({activeTasks.length})</span>
@@ -629,15 +776,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
             {/* Result count / clear when filtered */}
             {activeTasks.length > 0 && (activeTaskSearch || activeTaskPriorityFilter !== 'all') && (
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-gray-500">
-                  Showing {filteredActiveTasks.length} of {activeTasks.length} tasks
-                </p>
-                <button
-                  onClick={() => { setActiveTaskSearch(''); setActiveTaskPriorityFilter('all'); setActiveTaskSort('default'); }}
-                  className="text-xs text-indigo-600 hover:underline"
-                >
-                  Clear filters
-                </button>
+                <p className="text-xs text-gray-500">Showing {filteredActiveTasks.length} of {activeTasks.length} tasks</p>
+                <button onClick={() => { setActiveTaskSearch(''); setActiveTaskPriorityFilter('all'); setActiveTaskSort('default'); }} className="text-xs text-indigo-600 hover:underline">Clear filters</button>
               </div>
             )}
             {activeTasks.length === 0 ? (
@@ -651,19 +791,17 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                 <p className="text-gray-500 text-sm">No tasks match your search.</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {(showAllActiveTasks ? filteredActiveTasks : filteredActiveTasks.slice(0, 5)).map((task) => {
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {(showAllActiveTasks ? filteredActiveTasks : filteredActiveTasks.slice(0, 6)).map((task) => {
                   const overdue = isTaskOverdue(task);
-                  const days = getDaysUntilDue(task);
                   const reworkCount = getTaskReworkCount(task);
                   const onHold = isOnHoldTask(task);
                   const reworkCardClass = onHold ? 'task-card--on-hold' : getReworkCardClass(reworkCount);
-                  const reworkBadgeTone =
-                    reworkCount >= 3 ? 'red' : reworkCount === 2 ? 'orange' : reworkCount === 1 ? 'yellow' : null;
+                  const reworkBadgeTone = reworkCount >= 3 ? 'red' : reworkCount === 2 ? 'orange' : reworkCount === 1 ? 'yellow' : null;
                   return (
                     <div
                       key={task.id}
-                      className={`p-4 border border-gray-200 rounded-lg transition-shadow ${onHold ? 'cursor-pointer' : 'hover:shadow-md cursor-pointer'} ${reworkCardClass || ''}`}
+                      className={`p-4 border border-gray-200 rounded-lg transition-shadow cursor-pointer hover:shadow-md ${reworkCardClass || ''}`}
                       onClick={() => handleViewTaskDetail(task)}
                     >
                       <div className={`flex items-start justify-between mb-2 p-2 rounded-lg ${
@@ -675,12 +813,19 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                       }`}>
                         <div className="flex flex-col min-w-0 flex-1">
                           <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
+                          {(task.component_path || task.grade_name) && (
+                            <div
+                              className="mt-0.5 text-xs text-purple-600 truncate"
+                              title={task.component_path || task.grade_name}
+                            >
+                              📚 {task.component_path || task.grade_name}
+                            </div>
+                          )}
                           {task.performance_flag_type && !reworkCardClass && (
                             <div className={`flex items-center gap-1 mt-1 text-xs font-semibold ${
                               task.performance_flag_type === 'red' ? 'text-red-600' :
                               task.performance_flag_type === 'orange' ? 'text-orange-600' :
-                              task.performance_flag_type === 'yellow' ? 'text-yellow-600' :
-                              'text-green-600'
+                              task.performance_flag_type === 'yellow' ? 'text-yellow-600' : 'text-green-600'
                             }`}>
                               <Flag className="w-3 h-3" />
                               <span>{task.performance_flag_type.toUpperCase()} FLAG: {task.performance_flag_reason}</span>
@@ -688,283 +833,323 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                           )}
                         </div>
                         <div className="flex flex-col items-end gap-1 ml-2 shrink-0">
-                          <div className="flex items-center gap-2 flex-wrap justify-end">
-                            {onHold && (
-                              <Badge variant="secondary" size="sm">
-                                {getTaskStatusLabel('on-hold')}
-                              </Badge>
-                            )}
+                          <div className="flex items-center gap-1 flex-wrap justify-end">
+                            {onHold && <Badge variant="secondary" size="sm">{getTaskStatusLabel('on-hold')}</Badge>}
                             {reworkCount > 0 && reworkBadgeTone && (
-                              <span
-                                className={`rework-returned-badge rework-returned-badge--${reworkBadgeTone}`}
-                                role="status"
-                                title={`Returned for rework — ${getReworkReviewSubLabel(reworkCount)}`}
-                              >
-                                <span className="inline-flex items-center gap-0.5">
-                                  <RotateCcw className="w-3 h-3 shrink-0" aria-hidden />
-                                  Returned For Rework
-                                </span>
+                              <span className={`rework-returned-badge rework-returned-badge--${reworkBadgeTone}`} role="status" title={`Returned for rework — ${getReworkReviewSubLabel(reworkCount)}`}>
+                                <span className="inline-flex items-center gap-0.5"><RotateCcw className="w-3 h-3 shrink-0" aria-hidden />Rework</span>
                                 <span className="rework-returned-badge__round">{getReworkReviewSubLabel(reworkCount)}</span>
                               </span>
                             )}
-                            <Badge variant={task.priority === 'urgent' ? 'danger' : task.priority === 'high' ? 'warning' : 'default'} size="sm">
-                              {task.priority}
-                            </Badge>
+                            <Badge variant={task.priority === 'urgent' ? 'danger' : task.priority === 'high' ? 'warning' : 'default'} size="sm">{task.priority}</Badge>
                             {overdue && <AlertTriangle className="w-4 h-4 text-red-500" aria-label="Overdue" />}
                           </div>
                         </div>
                       </div>
-                      <ResubmissionDeadlineBanner
-                        deadline={task.resubmission_deadline ?? task.resubmissionDeadline}
-                        remainingTime={task.remainingTime}
-                        resubmissionOverdue={task.resubmissionOverdue}
-                      />
+                      <ResubmissionDeadlineBanner deadline={task.resubmission_deadline ?? task.resubmissionDeadline} remainingTime={task.remainingTime} resubmissionOverdue={task.resubmissionOverdue} />
                       <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-                        <span>{task.project_name}</span>
-                        <span className={overdue ? 'text-red-600 font-medium' : 'text-gray-600'}>
-                          {task.end_date ? (
-                            <>Due {new Date(task.end_date).toLocaleDateString()}</>
-                          ) : (
-                            'No due date'
-                          )}
+                        <span className="truncate mr-2">{task.project_name}</span>
+                        <span className={`shrink-0 ${overdue ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
+                          {task.end_date ? <>Due {new Date(task.end_date).toLocaleDateString()}</> : 'No due date'}
                         </span>
                       </div>
-                        <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <div className="w-16 bg-gray-200 rounded-full h-2">
                             <div className="bg-gray-600 h-2 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
                           </div>
                           <span className="text-sm text-gray-600">{getTaskDisplayProgress(task)}%</span>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          {!onHold && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleAddRemark(task); }}
-                            className="inline-flex items-center justify-center gap-1 h-7 px-3 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap"
-                          >
+                        {!onHold && (
+                          <button onClick={(e) => { e.stopPropagation(); handleAddRemark(task); }} className="inline-flex items-center justify-center gap-1 h-7 px-3 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap">
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3v-3z" /></svg>
                             Add Remark
                           </button>
-                          )}
-                        </div>
+                        )}
                       </div>
                     </div>
                   );
                 })}
-                {filteredActiveTasks.length > 5 && (
-                  <div className="text-center pt-4">
-                    <Button variant="outline" size="sm" onClick={() => setShowAllActiveTasks(!showAllActiveTasks)}>
-                      {showAllActiveTasks ? 'Show Less' : `View All (${filteredActiveTasks.length})`}
-                    </Button>
-                  </div>
-                )}
+              </div>
+            )}
+            {filteredActiveTasks.length > 6 && (
+              <div className="text-center pt-4">
+                <Button variant="outline" size="sm" onClick={() => setShowAllActiveTasks(!showAllActiveTasks)}>
+                  {showAllActiveTasks ? 'Show Less' : `View All (${filteredActiveTasks.length})`}
+                </Button>
               </div>
             )}
           </CardContent>
         </Card>
+        </div>{/* end active tasks wrapper */}
 
-        {/* Recent Completions */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Award className="w-5 h-5 text-gray-600" />
-              <span>Recent Completions ({completedTasks.length})</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {completedTasks.length === 0 ? (
-              <div className="text-center py-8">
-                <CheckCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600">No completed tasks yet.</p>
-              </div>
-            ) : (
-              <>
-                <div className="space-y-3">
-                  {(showAllCompletedTasks ? completedTasks : completedTasks.slice(0, 5)).map((task) => (
-                    <div key={task.id} className="p-4 border border-green-200 bg-green-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer"
-                      onClick={() => handleViewTaskDetail(task)}>
-                      <div className="flex items-start justify-between mb-2">
-                        <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
-                        <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 ml-2" />
-                      </div>
-                      <div className="text-sm text-gray-600 mb-1">{task.project_name}</div>
-                      <div className="text-sm text-green-600 font-medium">
-                        Completed {task.end_date ? new Date(task.end_date).toLocaleDateString() : 'recently'}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {completedTasks.length > 5 && (
-                  <div className="text-center pt-4">
-                    <Button variant="outline" size="sm" onClick={() => setShowAllCompletedTasks(!showAllCompletedTasks)}>
-                      {showAllCompletedTasks ? 'Show Less' : `View All (${completedTasks.length})`}
-                    </Button>
+        {/* ── Row 2: Overdue | Under Review | Upcoming — equal 3 columns ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+          {/* Overdue */}
+          <div ref={sectionRefs.overdue} className={`transition-all duration-300 rounded-xl ${activeStatFilter === 'overdue' ? 'ring-2 ring-red-400/60 shadow-lg' : ''}`}>
+            <Card className="flex flex-col">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                  <span>Overdue ({overdueTasks.length})</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1">
+                {overdueTasks.length === 0 ? (
+                  <div className="text-center py-8">
+                    <CheckCircle className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500">No overdue tasks. Keep it up!</p>
                   </div>
-                )}
-              </>
-            )}
-          </CardContent>
-        </Card>
-        </div>{/* end left column */}
-
-        {/* Right column: Overdue Tasks + Upcoming Tasks */}
-        <div className="flex flex-col gap-8">
-        {/* Overdue */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <AlertTriangle className="w-5 h-5 text-red-600" />
-              <span>Overdue Tasks ({overdueTasks.length})</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {overdueTasks.length === 0 ? (
-              <div className="text-center py-8">
-                <CheckCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600">No overdue tasks. Keep it up!</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {(showAllOverdueTasks ? overdueTasks : overdueTasks.slice(0, 5)).map((task) => {
-                  const daysOverdue = Math.abs(getDaysUntilDue(task) || 0);
-                  return (
-                    <div key={task.id} className="p-4 border border-red-200 bg-red-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer"
-                      onClick={() => handleViewTaskDetail(task)}>
-                      <div className={`flex items-start justify-between mb-2 p-2 rounded-lg ${
-                        task.performance_flag_type === 'red' ? 'bg-red-50' :
-                        task.performance_flag_type === 'orange' ? 'bg-orange-50' :
-                        task.performance_flag_type === 'yellow' ? 'bg-yellow-50' :
-                        task.performance_flag_type === 'green' ? 'bg-green-50' : 'bg-red-50'
-                      }`}>
-                        <div className="flex flex-col">
-                          <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
-                          {task.performance_flag_type && (
-                            <div className={`flex items-center gap-1 mt-1 text-xs font-semibold ${
-                              task.performance_flag_type === 'red' ? 'text-red-600' :
-                              task.performance_flag_type === 'orange' ? 'text-orange-600' :
-                              task.performance_flag_type === 'yellow' ? 'text-yellow-700' :
-                              'text-green-600'
-                            }`}>
-                              <Flag className="w-3 h-3" />
-                              <span>{task.performance_flag_type.toUpperCase()} FLAG: {task.performance_flag_reason}</span>
+                ) : (
+                  <div className="space-y-3">
+                    {(showAllOverdueTasks ? overdueTasks : overdueTasks.slice(0, 5)).map((task) => {
+                      const daysOverdue = Math.abs(getDaysUntilDue(task) || 0);
+                      return (
+                        <div key={task.id} className="p-3 border border-red-200 bg-red-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
+                          <div className="flex items-start justify-between mb-1.5">
+                            <div className="min-w-0 flex-1 mr-2">
+                              <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
+                              {(task.component_path || task.grade_name) && (
+                                <div
+                                  className="mt-0.5 text-xs text-purple-600 truncate"
+                                  title={task.component_path || task.grade_name}
+                                >
+                                  📚 {task.component_path || task.grade_name}
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 ml-2">
-                          <Badge variant="danger" size="sm">{task.priority}</Badge>
-                          <AlertTriangle className="w-4 h-4 text-red-500" />
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-                        <span>{task.project_name}</span>
-                        <span className="text-red-600 font-medium">{daysOverdue} days overdue</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 bg-gray-200 rounded-full h-2">
-                            <div className="bg-red-600 h-2 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Badge variant="danger" size="sm">{task.priority}</Badge>
+                              <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
+                            </div>
                           </div>
-                          <span className="text-sm text-gray-600">{getTaskDisplayProgress(task)}%</span>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); handleRequestExtension(task); }} className="text-red-600 border-red-300 hover:bg-red-50">
-                            <Clock className="w-3 h-3 mr-1" /> Extend
-                          </Button>
-                          <Button size="sm" onClick={(e) => { e.stopPropagation(); handleAddRemark(task); }} className="bg-blue-600 hover:bg-blue-700 text-white">
-                            <MessageSquare className="w-3 h-3 mr-1" /> Remark
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {overdueTasks.length > 5 && (
-                  <div className="text-center pt-4">
-                    <Button variant="outline" size="sm" onClick={() => setShowAllOverdueTasks(!showAllOverdueTasks)}>
-                      {showAllOverdueTasks ? 'Show Less' : `View All (${overdueTasks.length})`}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Upcoming Tasks */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Calendar className="w-5 h-5 text-blue-600" />
-              <span>Upcoming Tasks ({upcomingTasks.length})</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {upcomingTasks.length === 0 ? (
-              <div className="text-center py-8">
-                <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600">No upcoming tasks scheduled.</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {(showAllUpcomingTasks ? upcomingTasks : upcomingTasks.slice(0, 5)).map((task) => {
-                  const days = getDaysUntilDue(task);
-                  return (
-                    <div key={task.id} className="p-4 border border-blue-200 bg-blue-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer"
-                      onClick={() => handleViewTaskDetail(task)}>
-                      <div className={`flex items-start justify-between mb-2 p-2 rounded-lg ${
-                        task.performance_flag_type === 'red' ? 'bg-red-50' :
-                        task.performance_flag_type === 'orange' ? 'bg-orange-50' :
-                        task.performance_flag_type === 'yellow' ? 'bg-yellow-50' :
-                        task.performance_flag_type === 'green' ? 'bg-green-50' : ''
-                      }`}>
-                        <div className="flex flex-col">
-                          <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
-                          {task.performance_flag_type && (
-                            <div className={`flex items-center gap-1 mt-1 text-xs font-semibold ${
-                              task.performance_flag_type === 'red' ? 'text-red-600' :
-                              task.performance_flag_type === 'orange' ? 'text-orange-600' :
-                              task.performance_flag_type === 'yellow' ? 'text-yellow-700' :
-                              'text-green-600'
-                            }`}>
-                              <Flag className="w-3 h-3" />
-                              <span>{task.performance_flag_type.toUpperCase()} FLAG: {task.performance_flag_reason}</span>
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                            <span className="truncate mr-2">{task.project_name}</span>
+                            <span className="text-red-600 font-medium shrink-0">{daysOverdue}d overdue</span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-12 bg-gray-200 rounded-full h-1.5">
+                                <div className="bg-red-500 h-1.5 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
+                              </div>
+                              <span className="text-xs text-gray-500">{getTaskDisplayProgress(task)}%</span>
                             </div>
-                          )}
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); handleRequestExtension(task); }} className="h-6 px-2 text-xs text-red-600 border-red-300 hover:bg-red-50">
+                                <Clock className="w-3 h-3 mr-0.5" /> Extend
+                              </Button>
+                              <Button size="sm" onClick={(e) => { e.stopPropagation(); handleAddRemark(task); }} className="h-6 px-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
+                                <MessageSquare className="w-3 h-3 mr-0.5" /> Remark
+                              </Button>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 ml-2">
-                          <Badge variant={task.priority === 'urgent' ? 'danger' : task.priority === 'high' ? 'warning' : 'default'} size="sm">
-                            {task.priority}
-                          </Badge>
-                        </div>
+                      );
+                    })}
+                    {overdueTasks.length > 5 && (
+                      <div className="text-center pt-2">
+                        <Button variant="outline" size="sm" onClick={() => setShowAllOverdueTasks(!showAllOverdueTasks)}>
+                          {showAllOverdueTasks ? 'Show Less' : `View All (${overdueTasks.length})`}
+                        </Button>
                       </div>
-                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-                        <span>{task.project_name}</span>
-                        <span className="text-blue-600 font-medium">
-                          {days === 0 ? 'Due today' : days === 1 ? 'Due tomorrow' : `${days} days left`}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 bg-gray-200 rounded-full h-2">
-                          <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
-                        </div>
-                        <span className="text-sm text-gray-600">{getTaskDisplayProgress(task)}%</span>
-                      </div>
-                    </div>
-                  );
-                })}
-                {upcomingTasks.length > 5 && (
-                  <div className="text-center pt-4">
-                    <Button variant="outline" size="sm" onClick={() => setShowAllUpcomingTasks(!showAllUpcomingTasks)}>
-                      {showAllUpcomingTasks ? 'Show Less' : `View All (${upcomingTasks.length})`}
-                    </Button>
+                    )}
                   </div>
                 )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        </div>{/* end right column */}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Under Review */}
+          <div ref={sectionRefs.underReview} className={`transition-all duration-300 rounded-xl ${activeStatFilter === 'underReview' ? 'ring-2 ring-orange-400/60 shadow-lg' : ''}`}>
+            <Card className="flex flex-col">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Eye className="w-5 h-5 text-orange-600" />
+                  <span>Under Review ({underReviewTasks.length})</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1">
+                {underReviewTasks.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Eye className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500">No tasks under review.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(showAllUnderReviewTasks ? underReviewTasks : underReviewTasks.slice(0, 5)).map((task) => {
+                      const reworkCount = getTaskReworkCount(task);
+                      const isResubmitted = (task.status || '').toLowerCase().replace(/_/g, '-') === 'resubmitted';
+                      return (
+                        <div key={task.id} className="p-3 border border-orange-200 bg-orange-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
+                          <div className="flex items-start justify-between mb-1.5">
+                            <div className="min-w-0 flex-1 mr-2">
+                              <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
+                              {(task.component_path || task.grade_name) && (
+                                <div
+                                  className="mt-0.5 text-xs text-purple-600 truncate"
+                                  title={task.component_path || task.grade_name}
+                                >
+                                  📚 {task.component_path || task.grade_name}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              <Badge variant={task.priority === 'urgent' ? 'danger' : task.priority === 'high' ? 'warning' : 'default'} size="sm">{task.priority}</Badge>
+                              {isResubmitted && reworkCount > 0 && <Badge variant="warning" size="sm" className="text-xs">Resubmitted</Badge>}
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                            <span className="truncate mr-2">{task.project_name}</span>
+                            <span className="text-orange-600 font-medium shrink-0">{isResubmitted ? 'Re-submitted' : 'Submitted'}</span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-12 bg-gray-200 rounded-full h-1.5">
+                                <div className="bg-orange-400 h-1.5 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
+                              </div>
+                              <span className="text-xs text-gray-500">{getTaskDisplayProgress(task)}%</span>
+                            </div>
+                            <span className="text-xs text-gray-400">{task.updated_at ? new Date(task.updated_at).toLocaleDateString() : 'recently'}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {underReviewTasks.length > 5 && (
+                      <div className="text-center pt-2">
+                        <Button variant="outline" size="sm" onClick={() => setShowAllUnderReviewTasks(!showAllUnderReviewTasks)}>
+                          {showAllUnderReviewTasks ? 'Show Less' : `View All (${underReviewTasks.length})`}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Upcoming */}
+          <div ref={sectionRefs.upcoming} className={`transition-all duration-300 rounded-xl ${activeStatFilter === 'upcoming' ? 'ring-2 ring-blue-400/60 shadow-lg' : ''}`}>
+            <Card className="flex flex-col">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Calendar className="w-5 h-5 text-blue-600" />
+                  <span>Upcoming ({upcomingTasks.length})</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1">
+                {upcomingTasks.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Calendar className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500">No upcoming tasks scheduled.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(showAllUpcomingTasks ? upcomingTasks : upcomingTasks.slice(0, 5)).map((task) => {
+                      const days = getDaysUntilDue(task);
+                      return (
+                        <div key={task.id} className="p-3 border border-blue-200 bg-blue-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
+                          <div className="flex items-start justify-between mb-1.5">
+                            <div className="min-w-0 flex-1 mr-2">
+                              <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
+                              {(task.component_path || task.grade_name) && (
+                                <div
+                                  className="mt-0.5 text-xs text-purple-600 truncate"
+                                  title={task.component_path || task.grade_name}
+                                >
+                                  📚 {task.component_path || task.grade_name}
+                                </div>
+                              )}
+                            </div>
+                            <Badge variant={task.priority === 'urgent' ? 'danger' : task.priority === 'high' ? 'warning' : 'default'} size="sm" className="shrink-0">{task.priority}</Badge>
+                          </div>
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                            <span className="truncate mr-2">{task.project_name}</span>
+                            <span className="text-blue-600 font-medium shrink-0">
+                              {days === 0 ? 'Due today' : days === 1 ? 'Due tomorrow' : `${days}d left`}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-12 bg-gray-200 rounded-full h-1.5">
+                              <div className="bg-blue-400 h-1.5 rounded-full" style={{ width: `${getTaskDisplayProgress(task)}%` }} />
+                            </div>
+                            <span className="text-xs text-gray-500">{getTaskDisplayProgress(task)}%</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {upcomingTasks.length > 5 && (
+                      <div className="text-center pt-2">
+                        <Button variant="outline" size="sm" onClick={() => setShowAllUpcomingTasks(!showAllUpcomingTasks)}>
+                          {showAllUpcomingTasks ? 'Show Less' : `View All (${upcomingTasks.length})`}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+        </div>{/* end row 2 — 3 equal columns */}
+
+        {/* ── Row 3: Recent Completions — full width ── */}
+        <div ref={sectionRefs.completed} className={`transition-all duration-300 rounded-xl ${activeStatFilter === 'completed' ? 'ring-2 ring-green-400/60 shadow-lg' : ''}`}>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center space-x-2">
+                <Award className="w-5 h-5 text-green-600" />
+                <span>Recent Completions ({completedTasks.length})</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {completedTasks.length === 0 ? (
+                <div className="text-center py-8">
+                  <CheckCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600">No completed tasks yet.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {(showAllCompletedTasks ? completedTasks : completedTasks.slice(0, 6)).map((task) => (
+                      <div key={task.id} className="p-4 border border-green-200 bg-green-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="min-w-0 flex-1 mr-2">
+                            <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
+                            {(task.component_path || task.grade_name) && (
+                              <div
+                                className="mt-0.5 text-xs text-purple-600 truncate"
+                                title={task.component_path || task.grade_name}
+                              >
+                                📚 {task.component_path || task.grade_name}
+                              </div>
+                            )}
+                          </div>
+                          <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />
+                        </div>
+                        <div className="text-sm text-gray-600 mb-1">{task.project_name}</div>
+                        <div className="text-sm text-green-600 font-medium">
+                          Completed {task.end_date ? new Date(task.end_date).toLocaleDateString() : 'recently'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {completedTasks.length > 6 && (
+                    <div className="text-center pt-4">
+                      <Button variant="outline" size="sm" onClick={() => setShowAllCompletedTasks(!showAllCompletedTasks)}>
+                        {showAllCompletedTasks ? 'Show Less' : `View All (${completedTasks.length})`}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
       </div>
+      )}
+
     </div>
   );
 
@@ -1158,6 +1343,11 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
               <option value="skipped">Skipped</option>
               <option value="other">Other</option>
             </select>
+            {remarkType === 'general' && selectedTask?.status === 'not-started' && (
+              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800"><strong>Note:</strong> This will mark the task as In Progress and set progress to 50%.</p>
+              </div>
+            )}
             {remarkType === 'complete' && (
               <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <p className="text-sm text-yellow-800"><strong>Note:</strong> Selecting "Complete" will submit this task for admin review.</p>

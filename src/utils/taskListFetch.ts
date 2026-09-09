@@ -20,10 +20,14 @@ export interface TaskListQueryState {
   dateRangeEnd: string;
   debouncedSearch: string;
   onlyOverdue: boolean;
+  activeStatFilter?: string | null;
 }
 
 export function computeNeedsAllTasks(state: TaskListQueryState): boolean {
   const hasDateRange = !!state.dateRangeStart || !!state.dateRangeEnd;
+  // A KPI card filter (except 'total') requires all tasks so the client-side
+  // filter has the full dataset — not just the current backend page.
+  const hasStatFilter = !!state.activeStatFilter && state.activeStatFilter !== 'total';
   return (
     state.selectedStatus === 'overdue' ||
     state.selectedStatus === 'active' ||
@@ -34,7 +38,8 @@ export function computeNeedsAllTasks(state: TaskListQueryState): boolean {
     state.selectedAssignees.length > 0 ||
     hasDateRange ||
     !!state.debouncedSearch ||
-    state.onlyOverdue
+    state.onlyOverdue ||
+    hasStatFilter
   );
 }
 

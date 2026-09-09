@@ -191,6 +191,9 @@ async function logRemarkAdded(user, taskId, remarkText, remarkType, previousStat
   let actionType = ACTION_TYPES.REMARK_ADDED;
   if (remarkType === 'complete') actionType = ACTION_TYPES.SUBMITTED;
   else if (remarkType === 'skipped') actionType = ACTION_TYPES.STATUS_UPDATED;
+  else if (previousStatus && newStatus && previousStatus !== newStatus) {
+    actionType = ACTION_TYPES.STATUS_UPDATED;
+  }
 
   return logFromUser(user, taskId, actionType, remarkText, previousStatus, newStatus, conn);
 }

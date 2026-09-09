@@ -196,6 +196,9 @@ export interface Task {
   resubmission_set_at?: string | null;
   remainingTime?: string | null;
   resubmissionOverdue?: boolean;
+  // Enriched assignee objects from API (includes id, name, email, etc.)
+  assigneeDetails?: Array<{ id: string | number; name: string; email?: string; type?: string; [key: string]: any }>;
+  component_path?: string;
 }
 
 export interface TeamAllocation {

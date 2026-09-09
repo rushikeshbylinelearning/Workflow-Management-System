@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'dark';
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   loading?: boolean;
   icon?: React.ReactNode;
 }
@@ -21,7 +21,7 @@ export const Button = memo(function Button({
     danger: 'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500',
     dark: 'border border-gray-500 text-gray-200 hover:bg-gray-700 hover:text-white focus:ring-gray-400',
   };
-  const sizes = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-base' };
+  const sizes = { xs: 'px-2 py-1 text-xs', sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-base' };
   return (
     <button className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`} disabled={disabled || loading} {...props}>
       {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : icon ? <span className="mr-2">{icon}</span> : null}

@@ -182,6 +182,9 @@ app.use('/api/api-keys', apiKeyRoutes);
 
 app.use('/api/admin', require('./routes/teamsAdmin'));
 
+const adminAuditRoutes = require('./routes/adminAudit');
+app.use('/api/admin-audit', adminAuditRoutes);
+
 // API info endpoint
 app.get('/api', (req, res) => {
   res.json({

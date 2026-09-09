@@ -42,7 +42,7 @@ const getSummary = async (req, res) => {
         SUM(status = 'completed')    AS completed,
         SUM(status = 'blocked')      AS blocked,
         SUM(status = 'skipped')      AS skipped,
-        SUM(end_date < CURDATE() AND status NOT IN ('completed','skipped')) AS overdue,
+        SUM(end_date < CURDATE() AND status NOT IN ('completed','skipped','under-review')) AS overdue,
         ROUND(AVG(progress), 1) AS avg_progress
       FROM tasks
     `);
@@ -136,7 +136,7 @@ const getProjects = async (req, res) => {
         SUM(t.status = 'completed') AS completed_tasks,
         SUM(t.status = 'in-progress') AS in_progress_tasks,
         SUM(t.status = 'blocked') AS blocked_tasks,
-        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped')) AS overdue_tasks,
+        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped','under-review')) AS overdue_tasks,
         COUNT(DISTINCT ta.assignee_id) AS team_size,
         COALESCE(SUM(t.total_time_seconds), 0) AS total_time_seconds
       FROM projects p
@@ -177,7 +177,7 @@ const getTasks = async (req, res) => {
     if (status)      { where += ' AND t.status = ?';       params.push(status); }
     if (priority)    { where += ' AND t.priority = ?';     params.push(priority); }
     if (assignee_id) { where += ' AND ta.assignee_id = ?'; params.push(assignee_id); }
-    if (overdue === 'true') { where += ' AND t.end_date < CURDATE() AND t.status NOT IN (\'completed\',\'skipped\')'; }
+    if (overdue === 'true') { where += ' AND t.end_date < CURDATE() AND t.status NOT IN (\'completed\',\'skipped\',\'under-review\')'; }
 
     const tasks = await db.query(`
       SELECT
@@ -195,7 +195,7 @@ const getTasks = async (req, res) => {
         t.created_at,
         p.id   AS project_id,
         p.name AS project_name,
-        (t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped')) AS is_overdue,
+        (t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped','under-review')) AS is_overdue,
         GROUP_CONCAT(DISTINCT COALESCE(tm.name, au.name) SEPARATOR ', ') AS assignees
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
@@ -245,7 +245,7 @@ const getTeamPerformance = async (req, res) => {
         SUM(t.status = 'completed') AS completed_tasks,
         SUM(t.status = 'in-progress') AS in_progress_tasks,
         SUM(t.status = 'blocked') AS blocked_tasks,
-        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped')) AS overdue_tasks,
+        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed','skipped','under-review')) AS overdue_tasks,
         ROUND(
           CASE WHEN COUNT(DISTINCT ta.task_id) > 0
             THEN (SUM(t.status = 'completed') / COUNT(DISTINCT ta.task_id)) * 100
@@ -413,7 +413,7 @@ const getOverdueTasks = async (req, res) => {
       LEFT JOIN team_members tm ON ta.assignee_id = tm.id AND ta.assignee_type = 'team'
       LEFT JOIN admin_users au ON ta.assignee_id = au.id AND ta.assignee_type = 'admin'
       WHERE t.end_date < CURDATE()
-        AND t.status NOT IN ('completed', 'skipped')
+        AND t.status NOT IN ('completed', 'skipped', 'under-review')
       GROUP BY t.id
       ORDER BY days_overdue DESC
     `);
@@ -514,7 +514,7 @@ const getEmployeeAnalyticsList = async (req, res) => {
         SUM(t.status = 'completed') AS completed_tasks,
         SUM(t.status = 'in-progress') AS in_progress_tasks,
         SUM(t.status = 'under-review' OR t.status = 'resubmitted') AS under_review_tasks,
-        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped')) AS overdue_tasks,
+        SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped', 'under-review')) AS overdue_tasks,
         COALESCE(SUM(ttl.duration_seconds), 0) AS total_time_seconds,
         SUM(pf.type = 'red') AS red_flags,
         SUM(pf.type = 'orange') AS orange_flags,
@@ -609,7 +609,7 @@ const getEmployeeAnalyticsDetail = async (req, res) => {
           COUNT(DISTINCT t.id) AS total_tasks,
           SUM(t.status = 'completed') AS completed_tasks,
           SUM(t.status NOT IN ('completed', 'skipped')) AS active_tasks,
-          SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped')) AS overdue_tasks
+          SUM(t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped', 'under-review')) AS overdue_tasks
         FROM projects p
         INNER JOIN tasks t ON t.project_id = p.id
         INNER JOIN task_assignees ta ON ta.task_id = t.id AND ta.assignee_id = ? AND ta.assignee_type = 'team'
@@ -635,7 +635,7 @@ const getEmployeeAnalyticsDetail = async (req, res) => {
           p.name AS project_name,
           p.status AS project_status,
           cs.name AS stage_name,
-          (t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped')) AS is_overdue,
+          (t.end_date < CURDATE() AND t.status NOT IN ('completed', 'skipped', 'under-review')) AS is_overdue,
           COALESCE((
             SELECT SUM(ttl.duration_seconds)
             FROM task_time_logs ttl
