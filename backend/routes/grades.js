@@ -1,33 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const gradeController = require('../controllers/gradeController');
-const { requireAdminOrPMAuth } = require('../middleware/auth');
+const { requireAuth, requireAdminOrPMAuth } = require('../middleware/auth');
 
-// Apply authentication middleware to all routes (admin or project manager)
-router.use(requireAdminOrPMAuth);
+// Read — any authenticated user (admin, PM, or team member) so task tag filters work
+router.get('/project/:projectId/export', requireAdminOrPMAuth, gradeController.exportHierarchy);
+router.get('/project/:projectId', requireAuth, gradeController.getGradesByProject);
+router.get('/', requireAuth, gradeController.getAllGrades);
+router.get('/:id', requireAuth, gradeController.getGradeById);
 
-// Get all grades for a project
-router.get('/project/:projectId', gradeController.getGradesByProject);
-
-// Auto-distribute weights for grades in a project — MUST be before /:id
-router.post('/distribute-weights', gradeController.distributeWeights);
-
-// Bulk upload educational hierarchy — MUST be before /:id
-router.post('/bulk-upload', gradeController.bulkUpload);
-
-// Get all grades
-router.get('/', gradeController.getAllGrades);
-
-// Get grade by ID
-router.get('/:id', gradeController.getGradeById);
-
-// Create new grade
-router.post('/', gradeController.createGrade);
-
-// Update grade
-router.put('/:id', gradeController.updateGrade);
-
-// Delete grade
-router.delete('/:id', gradeController.deleteGrade);
+// Mutations — admin or project manager
+router.post('/distribute-weights', requireAdminOrPMAuth, gradeController.distributeWeights);
+router.post('/bulk-upload', requireAdminOrPMAuth, gradeController.bulkUpload);
+router.post('/', requireAdminOrPMAuth, gradeController.createGrade);
+router.put('/:id', requireAdminOrPMAuth, gradeController.updateGrade);
+router.delete('/:id', requireAdminOrPMAuth, gradeController.deleteGrade);
 
 module.exports = router;

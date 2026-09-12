@@ -567,6 +567,28 @@ export const taskService = {
     return result;
   },
 
+  bulkTag: async (rows: Array<Record<string, unknown>>): Promise<any> => {
+    const result = await apiService.post('/tasks/bulk-tag', rows);
+    return result;
+  },
+
+  getBulkRemarkDefaults: async (taskIds: (string | number)[]): Promise<any[]> => {
+    const ids = taskIds.map((id) => encodeURIComponent(String(id))).join(',');
+    const result = await apiService.get(`/tasks/bulk-remark-defaults?taskIds=${ids}`);
+    return result.data ?? result;
+  },
+
+  bulkRemark: async (updates: Array<{
+    taskId: string | number;
+    stage: string;
+    fileLocation?: string;
+    fileName?: string;
+    remark: string;
+  }>): Promise<any> => {
+    const result = await apiService.post('/tasks/bulk-remark', { updates });
+    return result;
+  },
+
   getByProject: async (projectId: string | number): Promise<any[]> => {
     const result = await apiService.get(`/tasks?project_id=${projectId}`);
     return extractArray(result);
@@ -909,6 +931,46 @@ export const gradeService = {
   distributeWeights: async (projectId: string | number): Promise<any> => {
     const result = await apiService.post('/grades/distribute-weights', { project_id: projectId });
     return result.data ?? result;
+  },
+
+  downloadExport: async (projectId: string | number, projectName?: string): Promise<void> => {
+    const token = sessionStorage.getItem('access_token') || sessionStorage.getItem('teamToken');
+    const response = await simpleFetch(`${API_URL}/grades/project/${projectId}/export`, {
+      method: 'GET',
+      headers: {
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+    });
+
+    if (!response.ok) {
+      let message = 'Failed to download educational hierarchy';
+      try {
+        const data = await response.json();
+        message = data.error?.message || data.message || message;
+      } catch {
+        // ignore parse errors
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    if (blob.size === 0) throw new Error('Received empty file from server');
+
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const safeProjectName = projectName
+      ? projectName.replace(/[^a-zA-Z0-9_-]+/g, '_').substring(0, 60)
+      : 'project';
+    const filename = match?.[1] || `educational_hierarchy_${safeProjectName}_${projectId}.xlsx`;
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   },
 };
 

@@ -21,6 +21,10 @@ export interface TaskListQueryState {
   debouncedSearch: string;
   onlyOverdue: boolean;
   activeStatFilter?: string | null;
+  selectedGradeId?: string;
+  selectedBookId?: string;
+  selectedUnitId?: string;
+  selectedLessonId?: string;
 }
 
 export function computeNeedsAllTasks(state: TaskListQueryState): boolean {
@@ -92,6 +96,10 @@ export function buildTaskListFetchParams(
   if (state.dateRangeStart) params.dateRangeStart = state.dateRangeStart;
   if (state.dateRangeEnd) params.dateRangeEnd = state.dateRangeEnd;
   if (state.debouncedSearch) params.search = state.debouncedSearch;
+  if (state.selectedGradeId) params.grade_id = state.selectedGradeId;
+  if (state.selectedBookId) params.book_id = state.selectedBookId;
+  if (state.selectedUnitId) params.unit_id = state.selectedUnitId;
+  if (state.selectedLessonId) params.lesson_id = state.selectedLessonId;
 
   return { params, needsAllTasks };
 }

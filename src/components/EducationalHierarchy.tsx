@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Modal } from './ui/Modal';
-import { Plus, Edit, Trash2, BookOpen, GraduationCap, Layers, FileText, ChevronDown, ChevronRight, Upload, X } from 'lucide-react';
+import { Plus, Edit, Trash2, BookOpen, GraduationCap, Layers, FileText, ChevronDown, ChevronRight, Upload, Download, X, Loader2 } from 'lucide-react';
 import BulkUploadHierarchyModal from './BulkUploadHierarchyModal';
 
 interface Grade {
@@ -73,6 +73,7 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
   const [showUnitModal, setShowUnitModal] = useState(false);
   const [showLessonModal, setShowLessonModal] = useState(false);
   const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   
   // Form States
   const [editingGrade, setEditingGrade] = useState<Grade | null>(null);
@@ -344,6 +345,18 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
     setShowUnitModal(true);
   };
 
+  const handleDownloadHierarchy = async () => {
+    try {
+      setDownloading(true);
+      setError(null);
+      await gradeService.downloadExport(projectId);
+    } catch (err: any) {
+      setError(err.message || 'Failed to download educational hierarchy');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
@@ -361,6 +374,15 @@ const EducationalHierarchy: React.FC<EducationalHierarchyProps> = ({ projectId }
           <p className="text-gray-600">Manage grades, books, units, and lessons for this project</p>
         </div>
         <div className="flex items-center space-x-2">
+          <Button
+            onClick={handleDownloadHierarchy}
+            variant="outline"
+            disabled={downloading}
+            className="flex items-center space-x-2"
+          >
+            {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            <span>{downloading ? 'Downloading...' : 'Download Excel'}</span>
+          </Button>
           <Button
             onClick={() => setShowBulkUploadModal(true)}
             variant="outline"

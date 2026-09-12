@@ -9,6 +9,7 @@ import {
   Trash2,
   Eye,
   Upload,
+  Tags,
   RotateCcw,
   LayoutGrid,
   List as ListIcon,
@@ -37,7 +38,13 @@ import {
 import { taskService, stageService, teamService, projectService, teamProjectService, skillService, gradeService, bookService, unitService, lessonService } from '../services/apiService';
 import { TaskSearchFilters, TaskFilters } from './TaskSearchFilters';
 import { BulkUploadModal } from './BulkUploadModal';
+import { BulkUpdateTasksModal } from './BulkUpdateTasksModal';
+import { BulkTagTasksModal } from './BulkTagTasksModal';
+import { HierarchyTagSearch } from './HierarchyTagSearch';
+import { buildProjectHierarchyTags, taskMatchesHierarchyFilter } from '../utils/educationalHierarchy';
 import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
+import { formatTaskTags, getBulkSelectionLimit } from '../utils/bulkRemark';
+import { useToast } from './ui/Toast';
 import { TaskExportButton } from './TaskExportButton';
 import { FlagEmployeeModal } from './modals/FlagEmployeeModal';
 import { Flag } from 'lucide-react';
@@ -80,6 +87,10 @@ const EMPTY_TASK_FILTERS: TaskFilters = {
   assignees: [],
   dateRangeStart: '',
   dateRangeEnd: '',
+  gradeId: '',
+  bookId: '',
+  unitId: '',
+  lessonId: '',
 };
 
 /** Stable empty array for filter deps — avoid `?? []` creating new refs each render */
@@ -183,9 +194,12 @@ function getInitialTaskListUi(
 export function TaskManager() {
   const { state, dispatch } = useApp();
   const { user } = useAuth();
+  const { showToast } = useToast();
   const { isProjectManager, accessInfo } = usePermissions();
   const isAdminUser = !!user;
   const canManageTasks = isAdminUser || isProjectManager;
+  const canSelectTasks = true;
+  const bulkSelectionLimit = getBulkSelectionLimit(canManageTasks);
 
   const statsCacheKey = useMemo(() => {
     if (user?.id) return buildTaskStatsCacheKey({ adminUserId: user.id });
@@ -268,6 +282,10 @@ export function TaskManager() {
   const dateRangeStart = filters.dateRangeStart ?? '';
   const dateRangeEnd = filters.dateRangeEnd ?? '';
   const hasDateRange = !!dateRangeStart || !!dateRangeEnd;
+  const selectedGradeId = filters.gradeId ?? '';
+  const selectedBookId = filters.bookId ?? '';
+  const selectedUnitId = filters.unitId ?? '';
+  const selectedLessonId = filters.lessonId ?? '';
 
   const setSelectedStage = (v: string) => setFilters(prev => ({ ...prev, stage: v }));
   const [showDebugInfo] = useState<boolean>(false);
@@ -312,8 +330,12 @@ export function TaskManager() {
     if (dateRangeStart) p.dateRangeStart = dateRangeStart;
     if (dateRangeEnd) p.dateRangeEnd = dateRangeEnd;
     if (debouncedSearch) p.search = debouncedSearch;
+    if (selectedGradeId) p.grade_id = selectedGradeId;
+    if (selectedBookId) p.book_id = selectedBookId;
+    if (selectedUnitId) p.unit_id = selectedUnitId;
+    if (selectedLessonId) p.lesson_id = selectedLessonId;
     return p;
-  }, [selectedProject, selectedTeam, selectedAssignees, selectedStage, dateRangeStart, dateRangeEnd, debouncedSearch]);
+  }, [selectedProject, selectedTeam, selectedAssignees, selectedStage, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId]);
 
   const {
     summary: dashboardSummary,
@@ -330,6 +352,8 @@ export function TaskManager() {
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
   const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
   const [isBulkUploadModalOpen, setIsBulkUploadModalOpen] = useState(false);
+  const [isBulkUpdateModalOpen, setIsBulkUpdateModalOpen] = useState(false);
+  const [isBulkTagModalOpen, setIsBulkTagModalOpen] = useState(false);
   const [showFlagModal, setShowFlagModal] = useState(false);
   const [flaggingMember, setFlaggingMember] = useState<{ id: number; name: string; taskId?: number; taskName?: string } | null>(null);
 
@@ -351,6 +375,10 @@ export function TaskManager() {
       debouncedSearch,
       onlyOverdue,
       activeStatFilter,
+      selectedGradeId,
+      selectedBookId,
+      selectedUnitId,
+      selectedLessonId,
     }),
     [
       sortField,
@@ -369,6 +397,10 @@ export function TaskManager() {
       debouncedSearch,
       onlyOverdue,
       activeStatFilter,
+      selectedGradeId,
+      selectedBookId,
+      selectedUnitId,
+      selectedLessonId,
     ]
   );
 
@@ -417,10 +449,10 @@ export function TaskManager() {
           stageService.getAll(),
           projectsPromise,
           skillService.getAll(),
-          canManageTasks ? gradeService.getAll() : emptyList,
-          canManageTasks ? bookService.getAll() : emptyList,
-          canManageTasks ? unitService.getAll() : emptyList,
-          canManageTasks ? lessonService.getAll() : emptyList,
+          gradeService.getAll().catch(() => []),
+          bookService.getAll().catch(() => []),
+          unitService.getAll().catch(() => []),
+          lessonService.getAll().catch(() => []),
         ]);
         const teamMembersList = teamMembersData.data || teamMembersData;
         const teamsList = teamsData.data || teamsData;
@@ -466,7 +498,15 @@ export function TaskManager() {
     if (canManageTasks || filters.project === 'all') return;
     const allowed = projects.some((p) => String(p.id) === String(filters.project));
     if (!allowed) {
-      setFilters((prev) => ({ ...prev, project: 'all', stage: 'all' }));
+      setFilters((prev) => ({
+        ...prev,
+        project: 'all',
+        stage: 'all',
+        gradeId: '',
+        bookId: '',
+        unitId: '',
+        lessonId: '',
+      }));
     }
   }, [canManageTasks, projects, filters.project]);
 
@@ -648,6 +688,10 @@ export function TaskManager() {
           assignees: isAdminUser && memberId ? [String(memberId)] : [],
           dateRangeStart: '',
           dateRangeEnd: '',
+          gradeId: '',
+          bookId: '',
+          unitId: '',
+          lessonId: '',
         };
         setFilters(isAdminUser ? nextFilters : sanitizeAssigneeFilters(nextFilters));
         setOnlyOverdue(false);
@@ -671,7 +715,8 @@ export function TaskManager() {
   // Reset to first page when filters or search change
   const prevFiltersRef = useRef({
     selectedStatus, selectedPriorities, selectedProject, selectedStage,
-    selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch
+    selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch,
+    selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId,
   });
 
   useEffect(() => {
@@ -686,21 +731,26 @@ export function TaskManager() {
       JSON.stringify(prev.selectedAssignees) !== JSON.stringify(selectedAssignees) ||
       prev.dateRangeStart !== dateRangeStart ||
       prev.dateRangeEnd !== dateRangeEnd ||
-      prev.debouncedSearch !== debouncedSearch;
+      prev.debouncedSearch !== debouncedSearch ||
+      prev.selectedGradeId !== selectedGradeId ||
+      prev.selectedBookId !== selectedBookId ||
+      prev.selectedUnitId !== selectedUnitId ||
+      prev.selectedLessonId !== selectedLessonId;
 
     prevFiltersRef.current = {
       selectedStatus, selectedPriorities, selectedProject, selectedStage,
-      selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch
+      selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch,
+      selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId,
     };
 
     if (filtersChanged && currentPage !== 1) {
       setCurrentPage(1);
     }
-  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Clear selections when filters change
   useEffect(() => {
     setSelectedTasks(new Set());
-  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, currentPage]);
+  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, currentPage]);
 
   // Stable callback passed to TaskSearchFilters — prevents the child from
   // re-creating its own internal callbacks on every parent render.
@@ -854,8 +904,15 @@ export function TaskManager() {
       }
     }
 
+    if (!taskMatchesHierarchyFilter(task, {
+      gradeId: selectedGradeId,
+      bookId: selectedBookId,
+      unitId: selectedUnitId,
+      lessonId: selectedLessonId,
+    })) return false;
+
     return true;
-  }), [tasks, state.filters, onlyOverdue, activeStatFilter, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+  }), [tasks, state.filters, onlyOverdue, activeStatFilter, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
 
   // Apply client-side filters to the kanban dataset.
   // NOTE: Status / priority / activeStatFilter / onlyOverdue are intentionally
@@ -905,8 +962,16 @@ export function TaskManager() {
         case 'no-due-date': if (taskEndDate) return false; break;
       }
     }
+
+    if (!taskMatchesHierarchyFilter(task, {
+      gradeId: selectedGradeId,
+      bookId: selectedBookId,
+      unitId: selectedUnitId,
+      lessonId: selectedLessonId,
+    })) return false;
+
     return true;
-  }), [kanbanTasks, state.filters, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+  }), [kanbanTasks, state.filters, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
 
   // Client-side filters (active, overdue, assignee, etc.) shrink the fetched list — paginate that result.
   const {
@@ -949,6 +1014,14 @@ export function TaskManager() {
       setCurrentPage(effectivePage);
     }
   }, [needsAllTasks, currentPage, effectivePage]);
+
+  const hierarchyTagItems = useMemo(
+    () =>
+      selectedProject && selectedProject !== 'all'
+        ? buildProjectHierarchyTags(selectedProject, grades, books, units, lessons)
+        : [],
+    [selectedProject, grades, books, units, lessons]
+  );
 
 
 
@@ -1175,19 +1248,30 @@ export function TaskManager() {
     setShowFlagModal(true);
   };
   const toggleTaskSelection = (taskId: string) => {
-    setSelectedTasks(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(taskId)) {
-        newSet.delete(taskId);
-      } else {
-        newSet.add(taskId);
-      }
-      return newSet;
+    if (selectedTasks.has(taskId)) {
+      setSelectedTasks((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+      return;
+    }
+    if (selectedTasks.size >= bulkSelectionLimit) {
+      showToast(`You can select at most ${bulkSelectionLimit} tasks at once.`, 'error');
+      return;
+    }
+    setSelectedTasks((prev) => {
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
     });
   };
 
   const selectAllTasks = () => {
-    const allTaskIds = filteredTasks.map(task => task.id.toString());
+    const allTaskIds = filteredTasks.slice(0, bulkSelectionLimit).map(task => task.id.toString());
+    if (filteredTasks.length > bulkSelectionLimit) {
+      showToast(`Selected the first ${bulkSelectionLimit} tasks (maximum at once).`, 'info');
+    }
     setSelectedTasks(new Set(allTaskIds));
   };
 
@@ -1314,6 +1398,20 @@ export function TaskManager() {
                 >
                   Bulk Upload
                 </Button>
+                <Button
+                  variant="dark"
+                  icon={<Edit2 className="w-4 h-4" />}
+                  onClick={() => setIsBulkUpdateModalOpen(true)}
+                >
+                  Bulk Update
+                </Button>
+                <Button
+                  variant="dark"
+                  icon={<Tags className="w-4 h-4" />}
+                  onClick={() => setIsBulkTagModalOpen(true)}
+                >
+                  Bulk Tag
+                </Button>
                 <Button icon={<Plus className="w-4 h-4" />} onClick={() => {
                   setEditingTask(null);
                   setIsCreateModalOpen(true);
@@ -1407,8 +1505,8 @@ export function TaskManager() {
               setCurrentPage(1);
             },
           },
-        ] as TaskStatCardConfig[]).map((stat) => (
-          <TaskStatCard key={stat.key} {...stat} />
+        ] as TaskStatCardConfig[]).map(({ key, ...stat }) => (
+          <TaskStatCard key={key} {...stat} />
         ))}
       </div>
       )}
@@ -1471,6 +1569,7 @@ export function TaskManager() {
         projectStages={projectStages}
         teamMembers={teamMembers}
         teams={teams}
+        hierarchyTagItems={hierarchyTagItems}
         loadingProjectStages={loadingProjectStages}
         onAddTask={canManageTasks ? () => { setEditingTask(null); setIsCreateModalOpen(true); } : undefined}
         showAssigneeFilter={isAdminUser}
@@ -1478,7 +1577,7 @@ export function TaskManager() {
       />
 
       {/* Bulk Selection Controls */}
-      {canManageTasks && filteredTasks.length > 0 && (
+      {canSelectTasks && filteredTasks.length > 0 && (
         <div className="bg-white p-4 rounded-lg border border-gray-200">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-3 sm:gap-4 min-w-0">
@@ -1522,19 +1621,32 @@ export function TaskManager() {
 
             {selectedTasks.size > 0 && (
               <BulkTaskSelectionActions
-                selectedTaskIds={Array.from(selectedTasks)}
-                selectedTaskNames={Array.from(selectedTasks).map((taskId) => {
-                  const task = filteredTasks.find((t) => t.id.toString() === taskId);
-                  return task?.name || `Task ${taskId}`;
-                })}
+                selectedTaskIds={[
+                  ...filteredTasksBase
+                    .filter((task) => selectedTasks.has(task.id.toString()))
+                    .map((task) => task.id),
+                  ...Array.from(selectedTasks).filter(
+                    (id) => !filteredTasksBase.some((task) => task.id.toString() === id)
+                  ),
+                ]}
+                selectedTaskNames={[
+                  ...filteredTasksBase
+                    .filter((task) => selectedTasks.has(task.id.toString()))
+                    .map((task) => task.name),
+                  ...Array.from(selectedTasks)
+                    .filter((id) => !filteredTasksBase.some((task) => task.id.toString() === id))
+                    .map((id) => `Task ${id}`),
+                ]}
+                selectedTasks={filteredTasksBase.filter((task) => selectedTasks.has(task.id.toString()))}
                 teamMembers={teamMembers}
+                assigneeMode={!canManageTasks}
                 onSuccess={async () => {
                   setSelectedTasks(new Set());
                   await refreshTasksList();
                   invalidateSummaryCache();
                   refreshSummary();
                 }}
-                onDelete={() => setIsBulkDeleteModalOpen(true)}
+                onDelete={canManageTasks ? () => setIsBulkDeleteModalOpen(true) : undefined}
               />
             )}
           </div>
@@ -1575,8 +1687,8 @@ export function TaskManager() {
           <div className="overflow-x-auto w-full min-w-0">
             <table className="task-table min-w-[960px]">
               <colgroup>
-                {canManageTasks && <col style={{ width: '36px' }} />}
-                <col style={{ width: canManageTasks ? '26%' : '28%' }} />
+                {canSelectTasks && <col style={{ width: '36px' }} />}
+                <col style={{ width: canSelectTasks ? '26%' : '28%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '12%' }} />
                 <col style={{ width: '10%' }} />
@@ -1588,7 +1700,7 @@ export function TaskManager() {
               </colgroup>
               <thead className="bg-gray-50">
                 <tr>
-                  {canManageTasks && (
+                  {canSelectTasks && (
                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <input
                         type="checkbox"
@@ -1739,8 +1851,9 @@ export function TaskManager() {
                   const reworkBadgeTone =
                     reworkCount >= 3 ? 'red' : reworkCount === 2 ? 'orange' : reworkCount === 1 ? 'yellow' : null;
                   const displayProgress = getTaskDisplayProgress(task);
-                  const taskSubtitle = task.component_path || task.description;
-                  const taskSubtitleTitle = [task.component_path, task.description].filter(Boolean).join(' · ');
+                  const taskTags = formatTaskTags(task);
+                  const taskSubtitle = taskTags || task.description;
+                  const taskSubtitleTitle = [taskTags, task.description].filter(Boolean).join(' · ');
 
                   return (
                     <tr
@@ -1755,7 +1868,7 @@ export function TaskManager() {
                             : '')
                       }`}
                     >
-                      {canManageTasks && (
+                      {canSelectTasks && (
                         <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
@@ -1790,10 +1903,10 @@ export function TaskManager() {
                           </div>
                           {taskSubtitle && (
                             <div
-                              className={`mt-0.5 text-xs task-table__text-clamp-2 ${task.component_path ? 'text-purple-600' : 'text-gray-500'}`}
+                              className={`mt-0.5 text-xs task-table__text-clamp-2 ${taskTags ? 'text-purple-600' : 'text-gray-500'}`}
                               title={taskSubtitleTitle || taskSubtitle}
                             >
-                              {task.component_path ? `📚 ${task.component_path}` : taskSubtitle}
+                              {taskTags ? `📚 ${taskTags}` : taskSubtitle}
                             </div>
                           )}
                         </div>
@@ -2160,6 +2273,27 @@ export function TaskManager() {
         }}
         projects={projects}
         teamMembers={teamMembers}
+      />
+
+      <BulkUpdateTasksModal
+        isOpen={isBulkUpdateModalOpen}
+        onClose={() => setIsBulkUpdateModalOpen(false)}
+        onSuccess={async () => {
+          await refreshTasksList();
+          invalidateSummaryCache();
+          refreshSummary();
+        }}
+      />
+
+      {/* Bulk Tag Modal */}
+      <BulkTagTasksModal
+        isOpen={isBulkTagModalOpen}
+        onClose={() => setIsBulkTagModalOpen(false)}
+        onSuccess={async () => {
+          await refreshTasksList();
+          invalidateSummaryCache();
+          refreshSummary();
+        }}
       />
 
       {/* Flag Employee Modal */}
@@ -2556,73 +2690,9 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
   // const selectedUnit = availableUnits.find((u: any) => u.id === formData.unitId);
   // const availableLessons = selectedUnit?.lessons || [];
 
-  // Build availableEducationalHierarchy array for the educational hierarchy selector
-  const availableEducationalHierarchy: any[] = [];
-
-  if (selectedProject) {
-    // Get grades for this project
-    const projectGrades = grades.filter((grade: any) => grade.project_id === parseInt(selectedProject.id));
-
-    // Hierarchy: Project > Grade > Unit > Lesson
-    projectGrades.forEach((grade: any) => {
-      // Add grade-level entry
-      availableEducationalHierarchy.push({
-        id: `grade-${grade.id}`,
-        name: grade.name,
-        type: 'grade',
-        gradeId: grade.id,
-        bookId: null,
-        unitId: null,
-        lessonId: null
-      });
-
-      // Get all books for this grade
-      const gradeBooks = books.filter((book: any) => book.grade_id === grade.id);
-
-      // Iterate books to preserve Grade > Book > Unit > Lesson display
-      gradeBooks.forEach((book: any) => {
-        // Add book-level entry
-        availableEducationalHierarchy.push({
-          id: `grade-${grade.id}-book-${book.id}`,
-          name: `${grade.name} > ${book.name}`,
-          type: 'book',
-          gradeId: grade.id,
-          bookId: book.id,
-          unitId: null,
-          lessonId: null
-        });
-
-        const bookUnits = units.filter((unit: any) => unit.book_id === book.id);
-
-        bookUnits.forEach((unit: any) => {
-          availableEducationalHierarchy.push({
-            id: `grade-${grade.id}-book-${book.id}-unit-${unit.id}`,
-            name: `${grade.name} > ${book.name} > ${unit.name}`,
-            type: 'unit',
-            gradeId: grade.id,
-            bookId: book.id,
-            unitId: unit.id,
-            lessonId: null
-          });
-
-          // Get lessons for this unit
-          const unitLessons = lessons.filter((lesson: any) => lesson.unit_id === unit.id);
-
-          unitLessons.forEach((lesson: any) => {
-            availableEducationalHierarchy.push({
-              id: `grade-${grade.id}-book-${book.id}-unit-${unit.id}-lesson-${lesson.id}`,
-              name: `${grade.name} > ${book.name} > ${unit.name} > ${lesson.name}`,
-              type: 'lesson',
-              gradeId: grade.id,
-              bookId: book.id,
-              unitId: unit.id,
-              lessonId: lesson.id
-            });
-          });
-        });
-      });
-    });
-  }
+  const availableEducationalHierarchy = selectedProject
+    ? buildProjectHierarchyTags(selectedProject.id, grades, books, units, lessons)
+    : [];
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={editingTask ? `Edit Task: ${editingTask.name}` : "Create New Task"} size="xl">
@@ -2714,59 +2784,29 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit, users, teams, skill
             )}
           </div>
 
-          <div>
+          <div className="col-span-2">
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Educational Hierarchy (Optional)
             </label>
-            <select
-              value={(() => {
-                // Find the matching educational hierarchy item based on current form data
-                const formGradeId = formData.gradeId ? parseInt(formData.gradeId) : null;
-                const formBookId = formData.bookId ? parseInt(formData.bookId) : null;
-                const formUnitId = formData.unitId ? parseInt(formData.unitId) : null;
-                const formLessonId = formData.lessonId ? parseInt(formData.lessonId) : null;
-
-                const matchingHierarchyItem = availableEducationalHierarchy.find(c => {
-                  return c.gradeId === formGradeId &&
-                    c.bookId === formBookId &&
-                    c.unitId === formUnitId &&
-                    c.lessonId === formLessonId;
-                });
-
-                return matchingHierarchyItem ? matchingHierarchyItem.id : '';
-              })()}
-              onChange={(e) => {
-                const selectedHierarchyItem = availableEducationalHierarchy.find(c => c.id === e.target.value);
-                if (selectedHierarchyItem) {
-                  setFormData({
-                    ...formData,
-                    gradeId: selectedHierarchyItem.gradeId ? selectedHierarchyItem.gradeId.toString() : '',
-                    bookId: selectedHierarchyItem.bookId ? selectedHierarchyItem.bookId.toString() : '',
-                    unitId: selectedHierarchyItem.unitId ? selectedHierarchyItem.unitId.toString() : '',
-                    lessonId: selectedHierarchyItem.lessonId ? selectedHierarchyItem.lessonId.toString() : ''
-                  });
-                } else {
-                  setFormData({
-                    ...formData,
-                    gradeId: '',
-                    bookId: '',
-                    unitId: '',
-                    lessonId: ''
-                  });
-                }
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            <HierarchyTagSearch
+              items={availableEducationalHierarchy}
+              gradeId={formData.gradeId}
+              bookId={formData.bookId}
+              unitId={formData.unitId}
+              lessonId={formData.lessonId}
               disabled={!formData.projectId}
-            >
-              <option value="">Project Level Task</option>
-              {availableEducationalHierarchy.map(component => (
-                <option key={component.id} value={component.id}>
-                  {component.name} ({component.type})
-                </option>
-              ))}
-            </select>
+              onChange={(selection) => {
+                setFormData({
+                  ...formData,
+                  gradeId: selection.gradeId,
+                  bookId: selection.bookId,
+                  unitId: selection.unitId,
+                  lessonId: selection.lessonId,
+                });
+              }}
+            />
             <p className="text-xs text-gray-500 mt-1">
-              Select a specific educational hierarchy item to assign this task to a particular grade, unit, or lesson
+              Search and select a tag to assign this task to a grade, book, unit, or lesson
             </p>
           </div>
 

@@ -126,9 +126,114 @@ async function notifyAssigneeTeams(user, taskId, payload) {
   }
 }
 
+const BULK_REMARK_STAGE_LABELS = {
+  general: 'General / In Progress',
+  complete: 'Completed',
+  skipped: 'Skipped',
+  other: 'Other',
+};
+
+function clipTeamsCell(value, max = 160) {
+  const text = stripHtml(String(value || '')).replace(/\|/g, '/');
+  if (!text) return '—';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function formatBulkRemarkTeamsMessage(rows) {
+  const lines = [
+    `Bulk remark update — ${rows.length} task${rows.length === 1 ? '' : 's'}`,
+    '',
+    'Tags | Task Name | Description | Stage | File Location | File Name | Remark',
+  ];
+  rows.forEach((row, index) => {
+    lines.push(
+      `${index + 1}. ${[
+        clipTeamsCell(row.tags, 80),
+        clipTeamsCell(row.name, 80),
+        clipTeamsCell(row.description, 100),
+        clipTeamsCell(row.stageLabel, 40),
+        clipTeamsCell(row.fileLocation, 80),
+        clipTeamsCell(row.fileName, 80),
+        clipTeamsCell(row.remark, 160),
+      ].join(' | ')}`
+    );
+  });
+  return lines.join('\n');
+}
+
+/**
+ * One Teams chat post for a bulk remark submit, instead of one message per task.
+ * Reuses the existing Power Automate payload keys so the flow still posts.
+ */
+async function notifyBulkAssigneeRemarks(user, updates) {
+  if (!isAssigneeTeamsActor(user) || !Array.isArray(updates) || updates.length === 0) return;
+
+  try {
+    const ids = updates.map((row) => Number(row.taskId)).filter((id) => id > 0);
+    if (ids.length === 0) return;
+
+    const placeholders = ids.map(() => '?').join(',');
+    const tasks = await db.query(
+      `SELECT t.id, t.name, t.description, t.component_path, p.name AS project_name,
+              g.name AS grade_name, b.name AS book_name, u.name AS unit_name, l.name AS lesson_name
+       FROM tasks t
+       LEFT JOIN projects p ON t.project_id = p.id
+       LEFT JOIN grades g ON t.grade_id = g.id
+       LEFT JOIN books b ON t.book_id = b.id
+       LEFT JOIN units u ON t.unit_id = u.id
+       LEFT JOIN lessons l ON t.lesson_id = l.id
+       WHERE t.id IN (${placeholders})`,
+      ids
+    );
+    const byId = {};
+    for (const task of tasks) {
+      byId[Number(task.id)] = task;
+    }
+
+    const tableRows = updates.map((row) => {
+      const task = byId[Number(row.taskId)] || {};
+      const tags = task.component_path
+        || [task.grade_name, task.book_name, task.unit_name, task.lesson_name].filter(Boolean).join(' > ');
+      return {
+        taskId: Number(row.taskId),
+        tags: tags || '—',
+        name: task.name || '—',
+        description: task.description || '—',
+        stage: row.stage,
+        stageLabel: BULK_REMARK_STAGE_LABELS[row.stage] || row.stage || '—',
+        fileLocation: row.fileLocation || '—',
+        fileName: row.fileName || '—',
+        remark: stripHtml(row.remark) || '—',
+        project: task.project_name || 'N/A',
+      };
+    });
+
+    const table = formatBulkRemarkTeamsMessage(tableRows);
+    const projects = [...new Set(tableRows.map((row) => row.project).filter((name) => name && name !== 'N/A'))];
+
+    await notifyAssigneeTeams(user, ids[0], {
+      project: projects.length === 1 ? projects[0] : (projects.join(', ') || 'N/A'),
+      taskDetails: `Bulk remark update (${tableRows.length} tasks)`,
+      taskDescription: `${tableRows.length} tasks updated in one bulk remark`,
+      task_description: `${tableRows.length} tasks updated in one bulk remark`,
+      serverLink: tableRows.length === 1 ? tableRows[0].fileLocation : 'See bulk table',
+      fileName: tableRows.length === 1 ? tableRows[0].fileName : 'See bulk table',
+      remark: table,
+      status: 'Bulk update',
+      type: 'remark',
+      isBulk: true,
+      bulkCount: tableRows.length,
+      tasks: tableRows,
+    });
+  } catch (err) {
+    console.error('[Teams] Bulk remark notification failed (non-blocking):', err.message);
+  }
+}
+
 module.exports = {
   isAssigneeTeamsActor,
   resolveAssigneeTeamsNotifyContext,
   resolveTeamForNotify,
   notifyAssigneeTeams,
+  notifyBulkAssigneeRemarks,
 };

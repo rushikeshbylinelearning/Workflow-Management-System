@@ -46,6 +46,8 @@ import { TaskDetails } from './TaskDetails';
 import { apiService, projectService, teamService, taskService, skillService, stageService, categoryService, gradeService, bookService, unitService, lessonService, performanceFlagService } from '../services/apiService';
 import { FlagEmployeeModal } from './modals/FlagEmployeeModal';
 import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
+import { MAX_BULK_ROWS_ADMIN } from '../utils/bulkRemark';
+import { useToast } from './ui/Toast';
 
 interface ProjectDetailsProps {
   project: Project;
@@ -56,6 +58,7 @@ interface ProjectDetailsProps {
 
 export function ProjectDetails({ project, onBack, onUpdate, categories }: ProjectDetailsProps) {
   const { state, dispatch } = useApp();
+  const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<'overview' | 'stages' | 'tasks' | 'timeline' | 'team' | 'educational-hierarchy'>('overview');
   const [isCreateTaskModalOpen, setIsCreateTaskModalOpen] = useState(false);
   const [isEditProjectModalOpen, setIsEditProjectModalOpen] = useState(false);
@@ -391,19 +394,30 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
 
   // Task selection functions
   const toggleTaskSelection = (taskId: string) => {
-    setSelectedTasks(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(taskId)) {
-        newSet.delete(taskId);
-      } else {
-        newSet.add(taskId);
-      }
-      return newSet;
+    if (selectedTasks.has(taskId)) {
+      setSelectedTasks((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+      return;
+    }
+    if (selectedTasks.size >= MAX_BULK_ROWS_ADMIN) {
+      showToast(`You can select at most ${MAX_BULK_ROWS_ADMIN} tasks at once.`, 'error');
+      return;
+    }
+    setSelectedTasks((prev) => {
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
     });
   };
 
   const selectAllTasks = () => {
-    const allTaskIds = projectTasks.map(task => task.id.toString());
+    const allTaskIds = projectTasks.slice(0, MAX_BULK_ROWS_ADMIN).map(task => task.id.toString());
+    if (projectTasks.length > MAX_BULK_ROWS_ADMIN) {
+      showToast(`Selected the first ${MAX_BULK_ROWS_ADMIN} tasks (maximum at once).`, 'info');
+    }
     setSelectedTasks(new Set(allTaskIds));
   };
 
@@ -1551,11 +1565,23 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
 
               {selectedTasks.size > 0 && (
                 <BulkTaskSelectionActions
-                  selectedTaskIds={Array.from(selectedTasks)}
-                  selectedTaskNames={Array.from(selectedTasks).map((taskId) => {
-                    const task = projectTasks.find((t) => t.id.toString() === taskId);
-                    return task?.name || `Task ${taskId}`;
-                  })}
+                  selectedTaskIds={[
+                    ...allProjectTasks
+                      .filter((task) => selectedTasks.has(task.id.toString()))
+                      .map((task) => task.id),
+                    ...Array.from(selectedTasks).filter(
+                      (id) => !allProjectTasks.some((task) => task.id.toString() === id)
+                    ),
+                  ]}
+                  selectedTaskNames={[
+                    ...allProjectTasks
+                      .filter((task) => selectedTasks.has(task.id.toString()))
+                      .map((task) => task.name),
+                    ...Array.from(selectedTasks)
+                      .filter((id) => !allProjectTasks.some((task) => task.id.toString() === id))
+                      .map((id) => `Task ${id}`),
+                  ]}
+                  selectedTasks={allProjectTasks.filter((task) => selectedTasks.has(task.id.toString()))}
                   teamMembers={teamMembers}
                   onSuccess={async () => {
                     setSelectedTasks(new Set());

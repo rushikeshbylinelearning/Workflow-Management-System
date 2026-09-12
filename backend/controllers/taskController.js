@@ -6,6 +6,32 @@ const { assertTaskAccess, assertCanManageTasks, canManageTasks } = require('../u
 const { ensureTeamMembersOnProject } = require('../utils/projectMembership');
 const { emitProjectTaskUpdate } = require('../utils/emitProjectTaskUpdate');
 const taskSummaryCache = require('../services/taskSummaryCache');
+const {
+  extractHierarchyNamesFromRow,
+  loadHierarchyMaps,
+  resolveHierarchyByNames,
+  normalizeHierarchyName,
+  buildComponentPath,
+} = require('../utils/hierarchyResolver');
+
+function asHierarchyText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Buffer.isBuffer(value)) return value.toString('utf8').trim();
+  if (typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+    return Buffer.from(value.data).toString('utf8').trim();
+  }
+  return String(value).trim();
+}
+
+function buildHierarchyBreadcrumb(task) {
+  const path = asHierarchyText(task?.component_path);
+  if (path) return path;
+  return [task?.grade_name, task?.book_name, task?.unit_name, task?.lesson_name]
+    .map((part) => asHierarchyText(part))
+    .filter(Boolean)
+    .join(' > ');
+}
 
 const TEAM_ASSIGNEE_UPDATE_FIELDS = new Set(['status', 'progress']);
 
@@ -117,10 +143,26 @@ const enrichTasksBatch = async (tasks) => {
     ) latest ON pf.team_member_id = latest.team_member_id AND pf.created_at = latest.max_created_at
   `;
 
-  const [allAssignees, allSkills, allFlags] = await Promise.all([
+  const hierarchyQuery = `
+    SELECT t.id,
+           t.component_path,
+           g.name AS grade_name,
+           b.name AS book_name,
+           u.name AS unit_name,
+           l.name AS lesson_name
+    FROM tasks t
+    LEFT JOIN grades g ON t.grade_id = g.id
+    LEFT JOIN books b ON t.book_id = b.id
+    LEFT JOIN units u ON t.unit_id = u.id
+    LEFT JOIN lessons l ON t.lesson_id = l.id
+    WHERE t.id IN (${placeholders})
+  `;
+
+  const [allAssignees, allSkills, allFlags, hierarchyRows] = await Promise.all([
     db.query(assigneesQuery, taskIds),
     db.query(skillsQuery, taskIds),
     db.query(flagsQuery, taskIds),
+    db.query(hierarchyQuery, taskIds),
   ]);
 
   // Group by task_id for O(1) lookup
@@ -141,11 +183,30 @@ const enrichTasksBatch = async (tasks) => {
     flagsByMember[f.team_member_id] = f;
   }
 
+  const hierarchyByTask = {};
+  for (const row of hierarchyRows) {
+    hierarchyByTask[row.id] = row;
+  }
+
   const enriched = tasks.map(task => {
     const assignees = assigneesByTask[task.id] || [];
     const skills = skillsByTask[task.id] || [];
+    const hierarchy = hierarchyByTask[task.id] || {};
+    const tags = buildHierarchyBreadcrumb({
+      component_path: task.component_path || hierarchy.component_path,
+      grade_name: task.grade_name || hierarchy.grade_name,
+      book_name: task.book_name || hierarchy.book_name,
+      unit_name: task.unit_name || hierarchy.unit_name,
+      lesson_name: task.lesson_name || hierarchy.lesson_name,
+    });
     return {
       ...task,
+      grade_name: task.grade_name || hierarchy.grade_name || null,
+      book_name: task.book_name || hierarchy.book_name || null,
+      unit_name: task.unit_name || hierarchy.unit_name || null,
+      lesson_name: task.lesson_name || hierarchy.lesson_name || null,
+      tags,
+      component_path: asHierarchyText(task.component_path) || tags || null,
       assignees: assignees.map(a => a.assignee_id),
       assigneeDetails: assignees.map(a => ({
         id: a.assignee_id,
@@ -1030,166 +1091,230 @@ const reviewExtensionRequest = async (req, res) => {
 // TASK REMARKS CONTROLLERS
 // =====================================================
 
-const addTaskRemark = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { remark, remark_date, remark_type = 'general', is_private = false, server_location, file_name } = req.body;
-    const added_by = req.user?.id;
-    const added_by_type = req.user?.type || 'team';
+const VALID_REMARK_TYPES = new Set(['general', 'complete', 'skipped', 'other']);
+// TODO(Bulk Add Remark spec §7): max row cap is config-driven and easy to change.
+const MAX_BULK_REMARK_ROWS = 50;
+const MAX_BULK_REMARK_ROWS_ADMIN = 100;
 
-    if (!remark) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Remark content is required' } });
-    if (added_by_type === 'team') {
-      if (!server_location) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Server location is required for team members' } });
-      if (!file_name) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'File name is required for team members' } });
+function maxBulkRemarkRowsForUser(user) {
+  return canManageTasks(user) ? MAX_BULK_REMARK_ROWS_ADMIN : MAX_BULK_REMARK_ROWS;
+}
+
+function httpError(statusCode, code, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+/**
+ * Shared write path for single-task and bulk "Add Remark".
+ * Always appends a new remark (never edits prior entries).
+ */
+async function applyTaskRemark({
+  taskId,
+  user,
+  remark,
+  remark_date,
+  remark_type = 'general',
+  is_private = false,
+  server_location,
+  file_name,
+  notifyContext = {},
+  enforceTeamFileFields = true,
+  skipAssigneeCheck = false,
+  skipTeamsNotify = false,
+}) {
+  const id = taskId;
+  const added_by = user?.id;
+  const added_by_type = user?.type || 'team';
+  const type = VALID_REMARK_TYPES.has(remark_type) ? remark_type : 'general';
+
+  if (!remark || !String(remark).trim()) {
+    throw httpError(400, 'VALIDATION_ERROR', 'Remark content is required');
+  }
+  if (enforceTeamFileFields && added_by_type === 'team') {
+    if (!server_location) throw httpError(400, 'VALIDATION_ERROR', 'Server location is required for team members');
+    if (!file_name) throw httpError(400, 'VALIDATION_ERROR', 'File name is required for team members');
+  }
+
+  if (!skipAssigneeCheck) {
+    await assertTaskAccess(id, user);
+  }
+
+  const taskRow = await db.queryFirst('SELECT id, status, project_id, name, description FROM tasks WHERE id = ?', [id]);
+  if (!taskRow) throw httpError(404, 'NOT_FOUND', 'Task not found');
+  if (added_by_type === 'team' && taskRow.status === 'on-hold') {
+    throw httpError(403, 'FORBIDDEN', 'This task is on hold. Remarks cannot be added until an admin resumes the task.');
+  }
+
+  const formattedRemarkDate = remark_date ? formatDateIST(remark_date) : getTodayIST();
+  const previousStatus = taskRow.status;
+  let newStatus = previousStatus;
+  let insertId;
+  const locationValue = server_location === undefined ? undefined : (server_location || null);
+  const fileNameValue = file_name === undefined ? undefined : (file_name || null);
+
+  await remarkHistory.runInTransaction(async (conn) => {
+    const [insertResult] = await conn.execute(
+      `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, added_by, added_by_type, formattedRemarkDate, remark, type || null, is_private || false, locationValue ?? null, fileNameValue ?? null]
+    );
+    insertId = insertResult.insertId;
+
+    // complete → under-review; skipped → skipped;
+    // general ("General / In Progress") promotes not-started → in-progress (50%)
+    if (type === 'complete') {
+      newStatus = 'under-review';
+    } else if (type === 'skipped') {
+      newStatus = 'skipped';
+    } else if (type === 'general' && previousStatus === 'not-started') {
+      newStatus = 'in-progress';
     }
 
-    await assertTaskAccess(id, req.user);
-
-    const taskRow = await db.queryFirst('SELECT id, status, project_id, name, description FROM tasks WHERE id = ?', [id]);
-    if (!taskRow) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Task not found' } });
-    if (added_by_type === 'team' && taskRow.status === 'on-hold') {
-      return res.status(403).json({
-        success: false,
-        error: { code: 'FORBIDDEN', message: 'This task is on hold. Remarks cannot be added until an admin resumes the task.' },
-      });
-    }
-
-    const formattedRemarkDate = remark_date ? formatDateIST(remark_date) : getTodayIST();
-    const previousStatus = taskRow.status;
-    let newStatus = previousStatus;
-    let insertId;
-
-    await remarkHistory.runInTransaction(async (conn) => {
-      const [insertResult] = await conn.execute(
-        `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, added_by, added_by_type, formattedRemarkDate, remark, remark_type || null, is_private || false, server_location || null, file_name || null]
-      );
-      insertId = insertResult.insertId;
-
-      // complete → under-review; skipped → skipped;
-      // general ("General / In Progress") promotes not-started → in-progress (50%)
-      if (remark_type === 'complete') {
-        newStatus = 'under-review';
-      } else if (remark_type === 'skipped') {
-        newStatus = 'skipped';
-      } else if (remark_type === 'general' && previousStatus === 'not-started') {
-        newStatus = 'in-progress';
-      }
-
-      if (newStatus !== previousStatus) {
-        const newProgress = calculateTaskProgress(newStatus);
-        await conn.execute(
-          'UPDATE tasks SET status = ?, progress = ?, updated_at = NOW() WHERE id = ?',
-          [newStatus, newProgress, id]
-        );
-      }
-
-      await remarkHistory.logRemarkAdded(
-        req.user,
-        Number(id),
-        remark,
-        remark_type,
-        previousStatus,
-        newStatus,
-        conn
-      );
-    });
-
+    const setClauses = [];
+    const setParams = [];
     if (newStatus !== previousStatus) {
-      if (taskRow.project_id) await recalculateProjectProgress(taskRow.project_id);
-      taskSummaryCache.invalidateAll();
+      setClauses.push('status = ?', 'progress = ?');
+      setParams.push(newStatus, calculateTaskProgress(newStatus));
+    }
+    if (locationValue) {
+      setClauses.push('server_location = ?');
+      setParams.push(locationValue);
+    }
+    if (setClauses.length > 0) {
+      setClauses.push('updated_at = NOW()');
+      await conn.execute(
+        `UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ?`,
+        [...setParams, id]
+      );
     }
 
-    if (global.notificationServer) {
-      try {
-        const userResult = await db.query(
-          added_by_type === 'admin' ? 'SELECT name FROM admin_users WHERE id = ?' : 'SELECT name FROM team_members WHERE id = ?',
-          [added_by]
-        );
-        const submitterName = userResult[0]?.name || 'Unknown User';
+    await remarkHistory.logRemarkAdded(
+      user,
+      Number(id),
+      remark,
+      type,
+      previousStatus,
+      newStatus,
+      conn
+    );
+  });
 
-        if (remark_type === 'complete') {
-          await global.notificationServer.notifyTaskSubmission({
-            task_id: id,
-            task_name: taskRow.name,
-            project_id: taskRow.project_id,
-            user_name: submitterName,
-            user_id: added_by,
-            user_type: added_by_type,
-            submitted_at: new Date().toISOString(),
-          });
-        }
+  if (newStatus !== previousStatus) {
+    if (taskRow.project_id) await recalculateProjectProgress(taskRow.project_id);
+    taskSummaryCache.invalidateAll();
+  }
 
-        await global.notificationServer.notifyNewRemark({
-          id: insertId,
+  if (global.notificationServer) {
+    try {
+      const userResult = await db.query(
+        added_by_type === 'admin' ? 'SELECT name FROM admin_users WHERE id = ?' : 'SELECT name FROM team_members WHERE id = ?',
+        [added_by]
+      );
+      const submitterName = userResult[0]?.name || 'Unknown User';
+
+      if (type === 'complete') {
+        await global.notificationServer.notifyTaskSubmission({
           task_id: id,
           task_name: taskRow.name,
           project_id: taskRow.project_id,
           user_name: submitterName,
+          user_id: added_by,
           user_type: added_by_type,
-          remark,
-          remark_type,
-          is_private,
+          submitted_at: new Date().toISOString(),
         });
-      } catch (notificationError) {
-        console.error('Failed to send remark notification:', notificationError);
+      }
+
+      await global.notificationServer.notifyNewRemark({
+        id: insertId,
+        task_id: id,
+        task_name: taskRow.name,
+        project_id: taskRow.project_id,
+        user_name: submitterName,
+        user_type: added_by_type,
+        remark,
+        remark_type: type,
+        is_private,
+      });
+    } catch (notificationError) {
+      console.error('Failed to send remark notification:', notificationError);
+    }
+  }
+
+  if (!skipTeamsNotify) {
+    const { notifyAssigneeTeams, isAssigneeTeamsActor } = require('../utils/teamsNotifyContext');
+    if (isAssigneeTeamsActor(user)) {
+      let projectName = null;
+      if (taskRow?.project_id) {
+        const projectRows = await db.query('SELECT name FROM projects WHERE id = ?', [taskRow.project_id]);
+        projectName = projectRows[0]?.name || null;
+      }
+      const task = { ...taskRow, project: { name: projectName } };
+      const teamsBase = {
+        project: notifyContext.project || task?.project?.name || 'N/A',
+        taskDetails: notifyContext.taskDetails || task?.title || task?.name || 'N/A',
+        taskDescription: task?.description || 'N/A',
+        task_description: task?.description || 'N/A',
+        serverLink: notifyContext.serverLocation || notifyContext.serverLink || locationValue || 'N/A',
+        remark: notifyContext.remarkContent || remark || 'N/A',
+        fileName: notifyContext.fileName || fileNameValue || 'N/A',
+      };
+
+      const isSubmissionRemark = type === 'complete' || type === 'skipped';
+
+      if (isSubmissionRemark || newStatus !== previousStatus) {
+        notifyAssigneeTeams(user, id, {
+          ...teamsBase,
+          status: newStatus,
+          type: 'status_update',
+        });
+      } else {
+        notifyAssigneeTeams(user, id, {
+          ...teamsBase,
+          status: notifyContext.remarkType || notifyContext.status || type || 'N/A',
+          type: 'remark',
+        });
       }
     }
+  }
 
-    // === TEAMS NOTIFICATION — assignee remarks only ===
-    {
-      const { notifyAssigneeTeams, isAssigneeTeamsActor } = require('../utils/teamsNotifyContext');
-      if (isAssigneeTeamsActor(req.user)) {
-        let projectName = null;
-        if (taskRow?.project_id) {
-          const projectRows = await db.query('SELECT name FROM projects WHERE id = ?', [taskRow.project_id]);
-          projectName = projectRows[0]?.name || null;
-        }
-        const task = { ...taskRow, project: { name: projectName } };
-        const teamsBase = {
-          project: req.body.project || task?.project?.name || 'N/A',
-          taskDetails: req.body.taskDetails || task?.title || task?.name || 'N/A',
-          taskDescription: task?.description || 'N/A',
-          task_description: task?.description || 'N/A',
-          serverLink: req.body.serverLocation || req.body.serverLink || server_location || 'N/A',
-          remark: req.body.remarkContent || req.body.remark || remark || 'N/A',
-          fileName: req.body.fileName || req.body.file_name || 'N/A',
-        };
+  return {
+    id: insertId,
+    task_id: id,
+    remark,
+    remark_date: formattedRemarkDate,
+    remark_type: type,
+    is_private,
+    previous_status: previousStatus,
+    status: newStatus,
+    progress: calculateTaskProgress(newStatus) ?? 0,
+  };
+}
 
-        const isSubmissionRemark = remark_type === 'complete' || remark_type === 'skipped';
+const addTaskRemark = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { remark, remark_date, remark_type = 'general', is_private = false, server_location, file_name } = req.body;
 
-        if (isSubmissionRemark || newStatus !== previousStatus) {
-          notifyAssigneeTeams(req.user, id, {
-            ...teamsBase,
-            status: newStatus,
-            type: 'status_update',
-          });
-        } else {
-          notifyAssigneeTeams(req.user, id, {
-            ...teamsBase,
-            status: req.body.remarkType || req.body.status || remark_type || 'N/A',
-            type: 'remark',
-          });
-        }
-      }
-    }
-    // === END TEAMS NOTIFICATION ===
+    const data = await applyTaskRemark({
+      taskId: id,
+      user: req.user,
+      remark,
+      remark_date,
+      remark_type,
+      is_private,
+      server_location,
+      file_name,
+      notifyContext: req.body || {},
+      enforceTeamFileFields: true,
+    });
 
     res.status(201).json({
       success: true,
-      data: {
-        id: insertId,
-        task_id: id,
-        remark,
-        remark_date: formattedRemarkDate,
-        remark_type,
-        is_private,
-        previous_status: previousStatus,
-        status: newStatus,
-        progress: calculateTaskProgress(newStatus) ?? 0,
-      },
+      data,
       message:
-        newStatus !== previousStatus && newStatus === 'in-progress'
+        data.status !== data.previous_status && data.status === 'in-progress'
           ? 'Remark added and task marked as In Progress'
           : 'Remark added successfully',
     });
@@ -1202,6 +1327,251 @@ const addTaskRemark = async (req, res) => {
     }
     console.error('Add task remark error:', error);
     res.status(500).json({ success: false, error: { code: 'DATABASE_ERROR', message: 'Failed to add remark' } });
+  }
+};
+
+function parseBulkRemarkTaskIds(rawIds, maxRows = MAX_BULK_REMARK_ROWS) {
+  const source = Array.isArray(rawIds)
+    ? rawIds
+    : String(rawIds || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+  const numericIds = [...new Set(
+    source.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id) && id > 0)
+  )];
+  if (numericIds.length === 0) {
+    return { error: { status: 400, code: 'INVALID_INPUT', message: 'Task IDs are required' } };
+  }
+  if (numericIds.length > maxRows) {
+    return {
+      error: {
+        status: 400,
+        code: 'INVALID_INPUT',
+        message: `Cannot add remarks to more than ${maxRows} tasks at once`,
+      },
+    };
+  }
+  return { numericIds };
+}
+
+const getBulkRemarkDefaults = async (req, res) => {
+  try {
+    const maxRows = maxBulkRemarkRowsForUser(req.user);
+    const parsed = parseBulkRemarkTaskIds(req.query.taskIds, maxRows);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({
+        success: false,
+        error: { code: parsed.error.code, message: parsed.error.message },
+      });
+    }
+    let { numericIds } = parsed;
+
+    if (!canManageTasks(req.user) && req.user?.type === 'team') {
+      const accessPlaceholders = numericIds.map(() => '?').join(',');
+      const assigned = await db.query(
+        `SELECT task_id FROM task_assignees
+         WHERE assignee_id = ? AND assignee_type = 'team' AND task_id IN (${accessPlaceholders})`,
+        [req.user.id, ...numericIds]
+      );
+      const allowed = new Set(assigned.map((row) => Number(row.task_id)));
+      numericIds = numericIds.filter((id) => allowed.has(id));
+    }
+
+    if (numericIds.length === 0) {
+      return res.json({ success: true, data: [], maxRows });
+    }
+
+    const placeholders = numericIds.map(() => '?').join(',');
+
+    const tasks = await db.query(
+      `SELECT t.id, t.name, t.description, t.status, t.server_location, t.category_stage_id,
+              t.component_path, cs.name AS stage_name,
+              g.name AS grade_name, b.name AS book_name, u.name AS unit_name, l.name AS lesson_name
+       FROM tasks t
+       LEFT JOIN category_stages cs ON t.category_stage_id = cs.id
+       LEFT JOIN grades g ON t.grade_id = g.id
+       LEFT JOIN books b ON t.book_id = b.id
+       LEFT JOIN units u ON t.unit_id = u.id
+       LEFT JOIN lessons l ON t.lesson_id = l.id
+       WHERE t.id IN (${placeholders})`,
+      numericIds
+    );
+
+    const latestRemarks = tasks.length === 0 ? [] : await db.query(
+      `SELECT tr.task_id, tr.server_location, tr.file_name
+       FROM task_remarks tr
+       INNER JOIN (
+         SELECT task_id, MAX(id) AS max_id
+         FROM task_remarks
+         WHERE task_id IN (${placeholders})
+         GROUP BY task_id
+       ) latest ON tr.id = latest.max_id`,
+      numericIds
+    );
+    const latestFileNames = tasks.length === 0 ? [] : await db.query(
+      `SELECT tr.task_id, tr.file_name
+       FROM task_remarks tr
+       INNER JOIN (
+         SELECT task_id, MAX(id) AS max_id
+         FROM task_remarks
+         WHERE task_id IN (${placeholders})
+           AND file_name IS NOT NULL AND TRIM(file_name) != ''
+         GROUP BY task_id
+       ) latest ON tr.id = latest.max_id`,
+      numericIds
+    );
+
+    const latestByTask = {};
+    for (const row of latestRemarks) {
+      latestByTask[row.task_id] = row;
+    }
+    const latestFileByTask = {};
+    for (const row of latestFileNames) {
+      latestFileByTask[row.task_id] = row.file_name;
+    }
+
+    const byId = {};
+    for (const task of tasks) {
+      const latest = latestByTask[task.id] || {};
+      byId[task.id] = {
+        taskId: task.id,
+        tags: buildHierarchyBreadcrumb(task),
+        component_path: task.component_path || '',
+        grade_name: task.grade_name || '',
+        book_name: task.book_name || '',
+        unit_name: task.unit_name || '',
+        lesson_name: task.lesson_name || '',
+        name: task.name || '',
+        description: task.description || '',
+        status: task.status,
+        stage: task.status,
+        stage_name: task.stage_name || '',
+        fileLocation: task.server_location || latest.server_location || '',
+        fileName: latestFileByTask[task.id] || '',
+      };
+    }
+
+    const ordered = numericIds.map((id) => byId[id] || null).filter(Boolean);
+
+    res.json({ success: true, data: ordered, maxRows });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Get bulk remark defaults error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to load bulk remark defaults' },
+    });
+  }
+};
+
+const bulkAddTaskRemarks = async (req, res) => {
+  try {
+    const manager = canManageTasks(req.user);
+    const maxRows = maxBulkRemarkRowsForUser(req.user);
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'updates must be a non-empty array' },
+      });
+    }
+    if (updates.length > maxRows) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `Cannot add remarks to more than ${maxRows} tasks at once`,
+        },
+      });
+    }
+
+    const results = [];
+    const succeeded = [];
+    for (const row of updates) {
+      const taskId = parseInt(row.taskId ?? row.task_id, 10);
+      if (Number.isNaN(taskId) || taskId <= 0) {
+        results.push({ taskId: row.taskId ?? null, success: false, error: 'Invalid task ID' });
+        continue;
+      }
+
+      const remark = typeof row.remark === 'string' ? row.remark.trim() : '';
+      if (!remark) {
+        results.push({ taskId, success: false, error: 'Remark is required' });
+        continue;
+      }
+
+      const stage = String(row.stage || row.remark_type || 'general').trim().toLowerCase();
+      const remarkType = VALID_REMARK_TYPES.has(stage) ? stage : null;
+      if (!remarkType) {
+        results.push({ taskId, success: false, error: 'Invalid stage' });
+        continue;
+      }
+
+      const fileLocation = row.fileLocation ?? row.server_location ?? '';
+      const fileName = row.fileName ?? row.file_name ?? '';
+
+      try {
+        const data = await applyTaskRemark({
+          taskId,
+          user: req.user,
+          remark,
+          remark_type: remarkType,
+          server_location: fileLocation,
+          file_name: fileName,
+          notifyContext: {
+            serverLocation: fileLocation,
+            fileName,
+            remarkContent: remark,
+            remarkType: remarkType,
+          },
+          enforceTeamFileFields: false,
+          skipAssigneeCheck: manager,
+          skipTeamsNotify: true,
+        });
+        results.push({ taskId, success: true, status: data.status, progress: data.progress });
+        succeeded.push({
+          taskId,
+          stage: remarkType,
+          fileLocation,
+          fileName,
+          remark,
+        });
+      } catch (rowError) {
+        results.push({
+          taskId,
+          success: false,
+          error: rowError.message || 'Failed to update task',
+        });
+      }
+    }
+
+    if (succeeded.length > 0) {
+      const { notifyBulkAssigneeRemarks } = require('../utils/teamsNotifyContext');
+      notifyBulkAssigneeRemarks(req.user, succeeded).catch((err) => {
+        console.error('[Teams] Bulk remark notification failed (non-blocking):', err?.message || err);
+      });
+    }
+
+    const updatedCount = results.filter((r) => r.success).length;
+    const failedCount = results.length - updatedCount;
+
+    res.json({
+      success: failedCount === 0,
+      results,
+      updatedCount,
+      failedCount,
+      message: failedCount === 0
+        ? `${updatedCount} task${updatedCount !== 1 ? 's' : ''} updated`
+        : `${updatedCount} updated, ${failedCount} failed`,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk add remarks error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to add bulk remarks' },
+    });
   }
 };
 
@@ -1604,6 +1974,8 @@ const bulkUploadTasks = async (req, res) => {
       stagesByProject[s.project_id].push(s);
     }
 
+    const hierarchyMapsByProject = {};
+
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
       const row = task.rowIndex || (i + 2);
@@ -1707,14 +2079,39 @@ const bulkUploadTasks = async (req, res) => {
       const progress = calculateTaskProgress(status) ?? 0;
       const serverLocation = task['File Location']?.toString().trim() || null;
 
+      let gradeId = null;
+      let bookId = null;
+      let unitId = null;
+      let lessonId = null;
+      let componentPath = null;
+
+      const hierarchyNames = extractHierarchyNamesFromRow(task);
+      if (hierarchyNames.grade || hierarchyNames.book || hierarchyNames.unit || hierarchyNames.lesson) {
+        if (!hierarchyMapsByProject[projectId]) {
+          hierarchyMapsByProject[projectId] = await loadHierarchyMaps(connection, projectId);
+        }
+        const resolved = resolveHierarchyByNames(hierarchyMapsByProject[projectId], hierarchyNames);
+        if (resolved.error) {
+          await connection.query('ROLLBACK');
+          connection.release();
+          return res.status(400).json({ success: false, errors: [{ row, error: resolved.error }] });
+        }
+        gradeId = resolved.grade_id;
+        bookId = resolved.book_id;
+        unitId = resolved.unit_id;
+        lessonId = resolved.lesson_id;
+        componentPath = resolved.component_path;
+      }
+
       const [result] = await connection.execute(
-        `INSERT INTO tasks (name, description, project_id, category_stage_id, status, priority, start_date, end_date, progress, estimated_hours, server_location, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (name, description, project_id, category_stage_id, status, priority, start_date, end_date, progress, estimated_hours, server_location, grade_id, book_id, unit_id, lesson_id, component_path, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           task['Task Name'].toString().trim(),
           task['Description']?.toString().trim() || null,
           projectId, stageId, status, priority,
-          startDate, endDate, progress, estimatedHours, serverLocation, createdBy,
+          startDate, endDate, progress, estimatedHours, serverLocation,
+          gradeId, bookId, unitId, lessonId, componentPath, createdBy,
         ]
       );
       const taskId = result.insertId;
@@ -1763,6 +2160,670 @@ const bulkUploadTasks = async (req, res) => {
     } catch (_) {}
     console.error('Bulk upload tasks error:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to upload tasks' });
+  }
+};
+
+// =====================================================
+// BULK TAG: Apply educational hierarchy tags to existing tasks by Task ID
+// POST /api/tasks/bulk-tag
+// Body: [{ rowIndex, 'Task ID', Grade?, Book?, Unit?, Lesson? }, ...]
+// =====================================================
+const bulkTagTasks = async (req, res) => {
+  const rows = req.body;
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ success: false, error: 'Request body must be a non-empty array of rows' });
+  }
+
+  if (rows.length > 500) {
+    return res.status(400).json({ success: false, error: 'Maximum 500 rows allowed per upload' });
+  }
+
+  const pool = db.getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.query('START TRANSACTION');
+
+    const hierarchyMapsByProject = {};
+    const affectedProjectIds = new Set();
+    let updated = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = row.rowIndex || (i + 2);
+      const taskIdRaw = row['Task ID'] ?? row['Task Id'] ?? row.taskId ?? row.task_id;
+      const taskId = parseInt(String(taskIdRaw).trim(), 10);
+
+      if (!taskIdRaw || Number.isNaN(taskId) || taskId <= 0) {
+        await connection.query('ROLLBACK');
+        connection.release();
+        return res.status(400).json({ success: false, errors: [{ row: rowNum, error: 'Task ID is required and must be a positive integer' }] });
+      }
+
+      const [taskRows] = await connection.execute(
+        'SELECT id, project_id FROM tasks WHERE id = ?',
+        [taskId]
+      );
+      if (!taskRows.length) {
+        await connection.query('ROLLBACK');
+        connection.release();
+        return res.status(400).json({ success: false, errors: [{ row: rowNum, error: `Task not found: ID ${taskId}` }] });
+      }
+
+      const projectId = taskRows[0].project_id;
+      const hierarchyNames = extractHierarchyNamesFromRow(row);
+
+      if (!hierarchyNames.grade && !hierarchyNames.book && !hierarchyNames.unit && !hierarchyNames.lesson) {
+        await connection.query('ROLLBACK');
+        connection.release();
+        return res.status(400).json({
+          success: false,
+          errors: [{ row: rowNum, error: 'At least one of Grade, Book, Unit, or Lesson is required' }],
+        });
+      }
+
+      if (!hierarchyMapsByProject[projectId]) {
+        hierarchyMapsByProject[projectId] = await loadHierarchyMaps(connection, projectId);
+      }
+
+      const resolved = resolveHierarchyByNames(hierarchyMapsByProject[projectId], hierarchyNames);
+      if (resolved.error) {
+        await connection.query('ROLLBACK');
+        connection.release();
+        return res.status(400).json({ success: false, errors: [{ row: rowNum, error: resolved.error }] });
+      }
+
+      await connection.execute(
+        `UPDATE tasks
+         SET grade_id = ?, book_id = ?, unit_id = ?, lesson_id = ?, component_path = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [resolved.grade_id, resolved.book_id, resolved.unit_id, resolved.lesson_id, resolved.component_path, taskId]
+      );
+
+      affectedProjectIds.add(projectId);
+      updated++;
+    }
+
+    for (const projectId of affectedProjectIds) {
+      await recalculateProjectProgress(projectId);
+    }
+
+    await connection.query('COMMIT');
+    connection.release();
+
+    res.status(200).json({
+      success: true,
+      updated,
+      message: `${updated} task${updated !== 1 ? 's' : ''} tagged successfully`,
+    });
+  } catch (error) {
+    try {
+      await connection.query('ROLLBACK');
+      connection.release();
+    } catch (_) {}
+    console.error('Bulk tag tasks error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to tag tasks' });
+  }
+};
+
+// =====================================================
+// BULK UPDATE: Update existing tasks by Task ID from Excel
+// POST /api/tasks/bulk-update
+// Never creates tasks. Empty cells leave the current value unchanged.
+// Task ID is the only required identifier; all other fields are optional.
+// =====================================================
+const BULK_UPDATE_MAX_ROWS = 1000;
+const BULK_UPDATE_NAME_MAX = 255;
+const BULK_UPDATE_DESCRIPTION_MAX = 5000;
+const BULK_UPDATE_LOCATION_MAX = 500;
+
+const bulkUpdateCell = (row, ...keys) => {
+  for (const key of keys) {
+    if (row[key] === undefined || row[key] === null) continue;
+    const value = String(row[key]).trim();
+    if (value) return value;
+  }
+  return '';
+};
+
+const bulkUpdateParseTaskId = (raw) => {
+  if (raw === undefined || raw === null) return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  if (!/^\d+(\.0+)?$/.test(value)) return null;
+  const id = parseInt(value, 10);
+  return id > 0 ? id : null;
+};
+
+const bulkUpdateParseDate = (val) => {
+  if (!val) return null;
+  const s = val.toString().trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const mdyMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdyMatch) {
+    const [, m, d, y] = mdyMatch;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return formatDateIST(parsed);
+  return null;
+};
+
+const bulkUpdateNormalizeName = (s) => String(s || '')
+  .replace(/[\u2013\u2014\u2012\u2010\u2011\uFE58\uFE63\uFF0D]/g, '-')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toLowerCase();
+
+const bulkUpdateFindProject = (allProjects, projectName) => {
+  const excelNorm = bulkUpdateNormalizeName(projectName);
+  const matches = allProjects.filter((p) => bulkUpdateNormalizeName(p.name) === excelNorm);
+  if (matches.length === 1) return { project: matches[0] };
+  if (matches.length > 1) return { error: `Ambiguous project name "${projectName}"` };
+  return { error: `Project not found: "${projectName}"` };
+};
+
+const bulkUpdateFindStage = (projectStages, stageName) => {
+  const normalizedStageName = bulkUpdateNormalizeName(stageName);
+  const exact = projectStages.filter((s) => bulkUpdateNormalizeName(s.name) === normalizedStageName);
+  if (exact.length === 1) return { stage: exact[0] };
+  if (exact.length > 1) return { error: `Ambiguous stage "${stageName}"` };
+
+  const fuzzy = projectStages.filter((s) => {
+    const dbNorm = bulkUpdateNormalizeName(s.name);
+    return normalizedStageName.startsWith(`${dbNorm} -`)
+      || normalizedStageName.startsWith(`${dbNorm} :`)
+      || normalizedStageName.startsWith(`${dbNorm}:`)
+      || (normalizedStageName.length >= 4 && dbNorm.startsWith(normalizedStageName));
+  });
+  if (fuzzy.length === 1) return { stage: fuzzy[0] };
+  if (fuzzy.length > 1) return { error: `Ambiguous stage "${stageName}"` };
+  return { error: `Stage "${stageName}" not found for this project` };
+};
+
+const bulkUpdateTasks = async (req, res) => {
+  let connection;
+  try {
+    assertCanManageTasks(req.user);
+
+    const rows = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'Request body must be a non-empty array of rows' });
+    }
+    if (rows.length > BULK_UPDATE_MAX_ROWS) {
+      return res.status(400).json({ success: false, error: `Maximum ${BULK_UPDATE_MAX_ROWS} rows allowed per upload` });
+    }
+
+    const rowErrors = [];
+    const seenTaskIds = new Map();
+    const parsedRows = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const rowNum = parseInt(row.rowIndex, 10) || (i + 2);
+      const taskIdRaw = row['Task ID'] ?? row['Task Id'] ?? row.taskId ?? row.task_id ?? row.id;
+      const taskId = bulkUpdateParseTaskId(taskIdRaw);
+
+      if (!taskId) {
+        rowErrors.push({ row: rowNum, error: 'Task ID is required and must be a positive integer' });
+        continue;
+      }
+
+      if (seenTaskIds.has(taskId)) {
+        rowErrors.push({
+          row: rowNum,
+          error: `Duplicate Task ID ${taskId} (already listed on row ${seenTaskIds.get(taskId)})`,
+        });
+        continue;
+      }
+      seenTaskIds.set(taskId, rowNum);
+
+      const name = bulkUpdateCell(row, 'Task Name', 'Name');
+      const description = bulkUpdateCell(row, 'Description');
+      const projectName = bulkUpdateCell(row, 'Project');
+      const stageName = bulkUpdateCell(row, 'Stage');
+      const statusRaw = bulkUpdateCell(row, 'Status');
+      const priorityRaw = bulkUpdateCell(row, 'Priority');
+      const estimatedHoursRaw = bulkUpdateCell(row, 'Estimated Hours');
+      const actualHoursRaw = bulkUpdateCell(row, 'Actual Hours');
+      const startDateRaw = bulkUpdateCell(row, 'Start Date');
+      const dueDateRaw = bulkUpdateCell(row, 'Due Date', 'End Date');
+      const assigneesRaw = bulkUpdateCell(row, 'Assignees', 'Assignee Email');
+      const fileLocation = bulkUpdateCell(row, 'File Location', 'Server Location');
+      const hierarchyNames = extractHierarchyNamesFromRow(row);
+      const hasHierarchy = Boolean(
+        hierarchyNames.grade || hierarchyNames.book || hierarchyNames.unit || hierarchyNames.lesson
+      );
+
+      const status = statusRaw ? statusRaw.toLowerCase().replace(/\s+/g, '-') : '';
+      const priority = priorityRaw ? priorityRaw.toLowerCase().replace(/\s+/g, '-') : '';
+
+      if (name && name.length > BULK_UPDATE_NAME_MAX) {
+        rowErrors.push({ row: rowNum, error: `Task Name must not exceed ${BULK_UPDATE_NAME_MAX} characters` });
+      }
+      if (description && description.length > BULK_UPDATE_DESCRIPTION_MAX) {
+        rowErrors.push({ row: rowNum, error: `Description must not exceed ${BULK_UPDATE_DESCRIPTION_MAX} characters` });
+      }
+      if (fileLocation && fileLocation.length > BULK_UPDATE_LOCATION_MAX) {
+        rowErrors.push({ row: rowNum, error: `File Location must not exceed ${BULK_UPDATE_LOCATION_MAX} characters` });
+      }
+      if (status && !VALID_STATUSES.includes(status)) {
+        rowErrors.push({ row: rowNum, error: `Invalid Status "${statusRaw}". Must be one of: ${VALID_STATUSES.join(', ')}` });
+      }
+      if (priority && !VALID_PRIORITIES.includes(priority)) {
+        rowErrors.push({ row: rowNum, error: `Invalid Priority "${priorityRaw}". Must be one of: ${VALID_PRIORITIES.join(', ')}` });
+      }
+
+      let estimatedHours;
+      if (estimatedHoursRaw) {
+        const hours = Number(estimatedHoursRaw);
+        if (Number.isNaN(hours) || hours < 0) {
+          rowErrors.push({ row: rowNum, error: 'Estimated Hours must be a number 0 or greater' });
+        } else {
+          estimatedHours = parseInt(hours, 10) || 0;
+        }
+      }
+
+      let actualHours;
+      if (actualHoursRaw) {
+        const hours = Number(actualHoursRaw);
+        if (Number.isNaN(hours) || hours < 0) {
+          rowErrors.push({ row: rowNum, error: 'Actual Hours must be a number 0 or greater' });
+        } else {
+          actualHours = parseInt(hours, 10) || 0;
+        }
+      }
+
+      let startDate;
+      if (startDateRaw) {
+        startDate = bulkUpdateParseDate(startDateRaw);
+        if (!startDate) {
+          rowErrors.push({ row: rowNum, error: 'Invalid Start Date format. Use YYYY-MM-DD' });
+        }
+      }
+
+      let endDate;
+      if (dueDateRaw) {
+        endDate = bulkUpdateParseDate(dueDateRaw);
+        if (!endDate) {
+          rowErrors.push({ row: rowNum, error: 'Invalid Due Date format. Use YYYY-MM-DD' });
+        }
+      }
+
+      if (startDate && endDate && startDate > endDate) {
+        rowErrors.push({ row: rowNum, error: 'Start Date cannot be after Due Date' });
+      }
+
+      if (hasHierarchy) {
+        if ((hierarchyNames.book || hierarchyNames.unit || hierarchyNames.lesson) && !hierarchyNames.grade) {
+          rowErrors.push({ row: rowNum, error: 'Grade is required when Book, Unit, or Lesson is provided' });
+        }
+        if ((hierarchyNames.unit || hierarchyNames.lesson) && !hierarchyNames.book) {
+          rowErrors.push({ row: rowNum, error: 'Book is required when Unit or Lesson is provided' });
+        }
+        if (hierarchyNames.lesson && !hierarchyNames.unit) {
+          rowErrors.push({ row: rowNum, error: 'Unit is required when Lesson is provided' });
+        }
+      }
+
+      const assigneeEmails = assigneesRaw
+        ? [...new Set(assigneesRaw.split(',').map((email) => email.trim().toLowerCase()).filter(Boolean))]
+        : [];
+
+      parsedRows.push({
+        rowNum,
+        taskId,
+        name,
+        description,
+        projectName,
+        stageName,
+        status,
+        priority,
+        estimatedHours,
+        actualHours,
+        startDate,
+        endDate,
+        fileLocation,
+        hierarchyNames,
+        hasHierarchy,
+        assigneeEmails,
+      });
+    }
+
+    if (rowErrors.length > 0) {
+      return res.status(400).json({ success: false, errors: rowErrors });
+    }
+
+    const pool = db.getPool();
+    connection = await pool.getConnection();
+    await connection.query('START TRANSACTION');
+
+    const taskIds = parsedRows.map((row) => row.taskId);
+    const idPlaceholders = taskIds.map(() => '?').join(',');
+    const [existingTasks] = await connection.execute(
+      `SELECT t.id, t.project_id, t.status,
+              t.grade_id, t.book_id, t.unit_id, t.lesson_id,
+              g.name AS grade_name, b.name AS book_name, u.name AS unit_name, l.name AS lesson_name
+       FROM tasks t
+       LEFT JOIN grades g ON g.id = t.grade_id
+       LEFT JOIN books b ON b.id = t.book_id
+       LEFT JOIN units u ON u.id = t.unit_id
+       LEFT JOIN lessons l ON l.id = t.lesson_id
+       WHERE t.id IN (${idPlaceholders})`,
+      taskIds
+    );
+    const taskById = new Map(existingTasks.map((task) => [Number(task.id), task]));
+
+    if (existingTasks.length === 0) {
+      await connection.query('ROLLBACK');
+      connection.release();
+      connection = null;
+      return res.status(400).json({
+        success: false,
+        errors: [{
+          row: 0,
+          error: 'None of these Task IDs exist in this environment. Export tasks from this Task list and use those IDs — this file may be from another database.',
+        }],
+      });
+    }
+
+    const [allProjects] = await connection.execute('SELECT id, name FROM projects');
+    const [allStages] = await connection.execute(
+      `SELECT cs.id, cs.name, p.id as project_id
+       FROM category_stages cs
+       INNER JOIN stage_templates st ON cs.id = st.stage_id
+       INNER JOIN projects p ON p.category_id = st.category_id`
+    );
+    const stagesByProject = {};
+    for (const stage of allStages) {
+      if (!stagesByProject[stage.project_id]) stagesByProject[stage.project_id] = [];
+      stagesByProject[stage.project_id].push(stage);
+    }
+
+    const [teamUsers] = await connection.execute('SELECT id, email FROM team_members WHERE is_active = 1');
+    const [adminUsers] = await connection.execute('SELECT id, email FROM admin_users');
+    const userByEmail = new Map();
+    for (const user of teamUsers) {
+      if (user.email) userByEmail.set(String(user.email).trim().toLowerCase(), { id: user.id, type: 'team' });
+    }
+    for (const user of adminUsers) {
+      if (user.email) userByEmail.set(String(user.email).trim().toLowerCase(), { id: user.id, type: 'admin' });
+    }
+
+    const hierarchyMapsByProject = {};
+    const plans = [];
+
+    for (const row of parsedRows) {
+      const existing = taskById.get(Number(row.taskId));
+      if (!existing) {
+        rowErrors.push({ row: row.rowNum, error: `Task not found: ID ${row.taskId}` });
+        continue;
+      }
+
+      let nextProjectId = Number(existing.project_id);
+      if (row.projectName) {
+        const matched = bulkUpdateFindProject(allProjects, row.projectName);
+        if (matched.error) {
+          rowErrors.push({ row: row.rowNum, error: matched.error });
+          continue;
+        }
+        nextProjectId = Number(matched.project.id);
+      }
+
+      const setFragments = [];
+      const setParams = [];
+      const projectChanged = nextProjectId !== Number(existing.project_id);
+
+      if (row.name) {
+        setFragments.push('name = ?');
+        setParams.push(row.name);
+      }
+      if (row.description) {
+        setFragments.push('description = ?');
+        setParams.push(row.description);
+      }
+      if (projectChanged) {
+        setFragments.push('project_id = ?');
+        setParams.push(nextProjectId);
+      }
+
+      if (row.stageName) {
+        const matchedStage = bulkUpdateFindStage(stagesByProject[nextProjectId] || [], row.stageName);
+        if (matchedStage.error) {
+          rowErrors.push({
+            row: row.rowNum,
+            error: `${matchedStage.error}${row.projectName ? ` for project "${row.projectName}"` : ''}`,
+          });
+        } else {
+          setFragments.push('category_stage_id = ?');
+          setParams.push(matchedStage.stage.id);
+        }
+      } else if (projectChanged) {
+        setFragments.push('category_stage_id = ?');
+        setParams.push(null);
+      }
+
+      if (row.status) {
+        setFragments.push('status = ?');
+        setParams.push(row.status);
+        const progressForStatus = calculateTaskProgress(row.status);
+        if (progressForStatus !== null) {
+          setFragments.push('progress = ?');
+          setParams.push(progressForStatus);
+        }
+      }
+      if (row.priority) {
+        setFragments.push('priority = ?');
+        setParams.push(row.priority);
+      }
+      if (row.startDate) {
+        setFragments.push('start_date = ?');
+        setParams.push(row.startDate);
+      }
+      if (row.endDate) {
+        setFragments.push('end_date = ?');
+        setParams.push(row.endDate);
+      }
+      if (row.estimatedHours !== undefined) {
+        setFragments.push('estimated_hours = ?');
+        setParams.push(row.estimatedHours);
+      }
+      if (row.actualHours !== undefined) {
+        setFragments.push('actual_hours = ?');
+        setParams.push(row.actualHours);
+      }
+      if (row.fileLocation) {
+        setFragments.push('server_location = ?');
+        setParams.push(row.fileLocation);
+      }
+
+      if (row.hasHierarchy) {
+        if (!hierarchyMapsByProject[nextProjectId]) {
+          hierarchyMapsByProject[nextProjectId] = await loadHierarchyMaps(connection, nextProjectId);
+        }
+        const names = row.hierarchyNames;
+        const resolved = resolveHierarchyByNames(hierarchyMapsByProject[nextProjectId], {
+          grade: names.grade || asHierarchyText(existing.grade_name),
+          book: names.book || asHierarchyText(existing.book_name),
+          unit: names.unit || asHierarchyText(existing.unit_name),
+          lesson: names.lesson || '',
+        });
+        if (resolved.error) {
+          rowErrors.push({ row: row.rowNum, error: resolved.error });
+        } else {
+          const unitChanged = Boolean(
+            names.unit
+            && normalizeHierarchyName(names.unit) !== normalizeHierarchyName(asHierarchyText(existing.unit_name))
+          );
+          const keepExistingLesson = !names.lesson && !unitChanged && existing.lesson_id;
+          const nextLessonId = keepExistingLesson ? existing.lesson_id : resolved.lesson_id;
+          const nextPath = keepExistingLesson
+            ? buildComponentPath({
+              gradeName: names.grade || asHierarchyText(existing.grade_name),
+              bookName: names.book || asHierarchyText(existing.book_name),
+              unitName: names.unit || asHierarchyText(existing.unit_name),
+              lessonName: asHierarchyText(existing.lesson_name),
+            })
+            : resolved.component_path;
+
+          setFragments.push('grade_id = ?', 'book_id = ?', 'unit_id = ?', 'lesson_id = ?', 'component_path = ?');
+          setParams.push(
+            resolved.grade_id,
+            resolved.book_id,
+            resolved.unit_id,
+            nextLessonId,
+            nextPath
+          );
+        }
+      } else if (projectChanged) {
+        setFragments.push('grade_id = ?', 'book_id = ?', 'unit_id = ?', 'lesson_id = ?', 'component_path = ?');
+        setParams.push(null, null, null, null, null);
+      }
+
+      let assignees = null;
+      if (row.assigneeEmails.length > 0) {
+        assignees = [];
+        for (const email of row.assigneeEmails) {
+          const user = userByEmail.get(email);
+          if (!user) {
+            rowErrors.push({ row: row.rowNum, error: `Assignee not found: ${email}` });
+          } else {
+            assignees.push(user);
+          }
+        }
+      }
+
+      const hasChanges = setFragments.length > 0 || assignees !== null;
+      if (!hasChanges) {
+        plans.push({ skip: true, taskId: row.taskId, projectId: existing.project_id });
+        continue;
+      }
+
+      plans.push({
+        skip: false,
+        rowNum: row.rowNum,
+        taskId: row.taskId,
+        previousStatus: existing.status,
+        previousProjectId: existing.project_id,
+        projectId: nextProjectId,
+        setFragments,
+        setParams,
+        assignees,
+        newStatus: row.status || null,
+      });
+    }
+
+    if (rowErrors.length > 0) {
+      await connection.query('ROLLBACK');
+      connection.release();
+      connection = null;
+      return res.status(400).json({ success: false, errors: rowErrors });
+    }
+
+    let updated = 0;
+    let skipped = 0;
+    const affectedProjectIds = new Set();
+    const statusLogs = [];
+    const teamAssigneesByProject = new Map();
+
+    for (const plan of plans) {
+      if (plan.skip) {
+        skipped++;
+        continue;
+      }
+
+      if (plan.setFragments.length > 0) {
+        await connection.execute(
+          `UPDATE tasks SET ${plan.setFragments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [...plan.setParams, plan.taskId]
+        );
+      }
+
+      if (plan.assignees) {
+        await connection.execute('DELETE FROM task_assignees WHERE task_id = ?', [plan.taskId]);
+        for (const assignee of plan.assignees) {
+          await connection.execute(
+            'INSERT IGNORE INTO task_assignees (task_id, assignee_id, assignee_type) VALUES (?, ?, ?)',
+            [plan.taskId, assignee.id, assignee.type]
+          );
+          if (assignee.type === 'team') {
+            if (!teamAssigneesByProject.has(plan.projectId)) {
+              teamAssigneesByProject.set(plan.projectId, new Set());
+            }
+            teamAssigneesByProject.get(plan.projectId).add(assignee.id);
+          }
+        }
+      }
+
+      if (plan.newStatus && plan.newStatus !== plan.previousStatus) {
+        statusLogs.push({ taskId: plan.taskId, from: plan.previousStatus, to: plan.newStatus });
+      }
+
+      affectedProjectIds.add(plan.projectId);
+      affectedProjectIds.add(plan.previousProjectId);
+      updated++;
+    }
+
+    await connection.query('COMMIT');
+    connection.release();
+    connection = null;
+
+    for (const projectId of affectedProjectIds) {
+      if (projectId) {
+        try {
+          await recalculateProjectProgress(projectId);
+        } catch (progressError) {
+          console.error('Bulk update project progress error:', progressError);
+        }
+      }
+    }
+
+    for (const log of statusLogs) {
+      try {
+        await remarkHistory.logStatusChange(req.user, Number(log.taskId), log.from, log.to);
+      } catch (historyError) {
+        console.error('Bulk update status history error:', historyError);
+      }
+    }
+
+    for (const [projectId, memberIds] of teamAssigneesByProject.entries()) {
+      try {
+        await ensureTeamMembersOnProject(projectId, [...memberIds]);
+      } catch (membershipError) {
+        console.error('Failed to add bulk-update assignees to project team:', membershipError);
+      }
+    }
+
+    affectedProjectIds.forEach((projectId) => {
+      if (projectId) emitProjectTaskUpdate(projectId, null, 'updated');
+    });
+    taskSummaryCache.invalidateAll();
+
+    return res.status(200).json({
+      success: true,
+      updated,
+      skipped,
+      message: updated > 0
+        ? `${updated} task${updated !== 1 ? 's' : ''} updated successfully${skipped ? ` (${skipped} skipped with no changes)` : ''}`
+        : `No tasks were changed${skipped ? ` (${skipped} row${skipped !== 1 ? 's' : ''} had only Task ID)` : ''}`,
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.query('ROLLBACK');
+        connection.release();
+      } catch (_) {}
+    }
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: { code: error.code || 'FORBIDDEN', message: error.message },
+      });
+    }
+    console.error('Bulk update tasks error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to update tasks' });
   }
 };
 
@@ -2299,8 +3360,8 @@ module.exports = {
   getTasks, getTask, createTask, updateTask, deleteTask, bulkDeleteTasks,
   testStageFilter, getBulkCreatePreview, bulkCreateTasks,
   requestTaskExtension, getTaskExtensions, reviewExtensionRequest,
-  addTaskRemark, getTaskRemarks, getTaskRemarksHistory, deleteTaskRemark,
+  addTaskRemark, getBulkRemarkDefaults, bulkAddTaskRemarks, getTaskRemarks, getTaskRemarksHistory, deleteTaskRemark,
   getNotifications, getTeamNotifications, reviewTaskCompletion,
-  bulkUploadTasks, bulkAssignTasks, bulkUpdateTaskStatus, bulkReassignTasks,
+  bulkUploadTasks, bulkTagTasks, bulkUpdateTasks, bulkAssignTasks, bulkUpdateTaskStatus, bulkReassignTasks,
   bulkUpdateTaskDates, bulkApproveTasks,
 };

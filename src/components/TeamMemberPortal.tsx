@@ -78,6 +78,8 @@ import { TopPerformers } from './TopPerformers';
 import { Notification } from './Notification';
 import { Dashboard } from './Dashboard';
 import { TaskManager } from './TaskManager';
+import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
+import { MAX_BULK_ROWS } from '../utils/bulkRemark';
 
 interface TeamMemberPortalProps {
   user: UserType;
@@ -115,6 +117,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false);
   const [isRemarkModalOpen, setIsRemarkModalOpen] = useState(false);
   const [selectedTaskForDetail, setSelectedTaskForDetail] = useState<Task | null>(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [extensionReason, setExtensionReason] = useState('');
   const [extensionDate, setExtensionDate] = useState('');
   const [remarkContent, setRemarkContent] = useState('');
@@ -331,6 +334,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
 
   const handleSetDashboardView = (view: 'list' | 'kanban') => {
     setDashboardView(view);
+    if (view !== 'list') setSelectedTaskIds(new Set());
     try { sessionStorage.setItem('team_dashboard_view', view); } catch { /* ignore */ }
   };
 
@@ -340,6 +344,46 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   const handleBackFromTaskDetail = () => { setSelectedTaskForDetail(null); };
   const handleFlagTypeClick = (type: string) => { setSelectedFlagType(type); setShowFlagTasksModal(true); };
   const handleCloseFlagTasksModal = () => { setShowFlagTasksModal(false); setSelectedFlagType(null); };
+
+  const toggleAssigneeTaskSelection = (task: Task) => {
+    if (isOnHoldTask(task)) return;
+    const id = task.id.toString();
+    if (selectedTaskIds.has(id)) {
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      return;
+    }
+    if (selectedTaskIds.size >= MAX_BULK_ROWS) {
+      showToast(`You can select at most ${MAX_BULK_ROWS} tasks at once.`, 'error');
+      return;
+    }
+    setSelectedTaskIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+
+  const renderTaskCheckbox = (task: Task, extraClass = '') => {
+    const selectable = !isOnHoldTask(task);
+    return (
+      <input
+        type="checkbox"
+        checked={selectedTaskIds.has(task.id.toString())}
+        disabled={!selectable}
+        title={selectable ? 'Select for bulk remark' : 'On hold — remarks cannot be added'}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          e.stopPropagation();
+          toggleAssigneeTaskSelection(task);
+        }}
+        className={`rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:opacity-40 shrink-0 ${extraClass}`}
+      />
+    );
+  };
 
   const submitExtensionRequest = async () => {
     if (selectedTask) {
@@ -426,6 +470,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
 
   // On-hold tasks – shown separately below kanban
   const onHoldTasks = userTasks.filter(t => isOnHoldTask(t));
+  const selectableAssigneeTasks = userTasks.filter(t => !isOnHoldTask(t));
 
   // Active tasks: work in progress, not yet submitted to admin/PM.
   // Explicitly exclude: completed, on-hold, under-review, resubmitted (those go to their own sections)
@@ -674,6 +719,80 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
         </div>
       </div>
 
+      {dashboardView === 'list' && selectableAssigneeTasks.length > 0 && (
+        <div className="bg-white p-4 rounded-lg border border-gray-200 mb-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4 min-w-0">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={selectableAssigneeTasks.length > 0 && selectableAssigneeTasks.every((task) => selectedTaskIds.has(task.id.toString()))}
+                  ref={(input) => {
+                    if (input) {
+                      input.indeterminate =
+                        selectedTaskIds.size > 0 &&
+                        selectedTaskIds.size < selectableAssigneeTasks.length;
+                    }
+                  }}
+                  onChange={() => {
+                    const allSelected = selectableAssigneeTasks.every((task) => selectedTaskIds.has(task.id.toString()));
+                    if (allSelected) {
+                      setSelectedTaskIds(new Set());
+                    } else {
+                      if (selectableAssigneeTasks.length > MAX_BULK_ROWS) {
+                        showToast(`Selected the first ${MAX_BULK_ROWS} tasks (maximum at once).`, 'info');
+                      }
+                      setSelectedTaskIds(new Set(
+                        selectableAssigneeTasks.slice(0, MAX_BULK_ROWS).map((task) => task.id.toString())
+                      ));
+                    }
+                  }}
+                  className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                />
+                <span className="text-sm font-medium text-gray-700">
+                  {selectableAssigneeTasks.every((task) => selectedTaskIds.has(task.id.toString())) && selectableAssigneeTasks.length > 0
+                    ? 'Deselect All'
+                    : 'Select All'}
+                </span>
+              </div>
+              {selectedTaskIds.size > 0 && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">
+                    {selectedTaskIds.size} task{selectedTaskIds.size !== 1 ? 's' : ''} selected
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedTaskIds(new Set())}
+                    className="text-gray-600 hover:text-gray-800"
+                  >
+                    Clear Selection
+                  </Button>
+                </div>
+              )}
+            </div>
+            {selectedTaskIds.size > 0 && (
+              <BulkTaskSelectionActions
+                selectedTaskIds={selectableAssigneeTasks
+                  .filter((task) => selectedTaskIds.has(task.id.toString()))
+                  .map((task) => task.id)}
+                selectedTaskNames={selectableAssigneeTasks
+                  .filter((task) => selectedTaskIds.has(task.id.toString()))
+                  .map((task) => task.name)}
+                selectedTasks={selectableAssigneeTasks
+                  .filter((task) => selectedTaskIds.has(task.id.toString()))}
+                teamMembers={[]}
+                assigneeMode
+                onSuccess={async () => {
+                  setSelectedTaskIds(new Set());
+                  await loadUserData();
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Kanban view ── */}
       {dashboardView === 'kanban' && (
         <KanbanView
@@ -804,13 +923,14 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                       className={`p-4 border border-gray-200 rounded-lg transition-shadow cursor-pointer hover:shadow-md ${reworkCardClass || ''}`}
                       onClick={() => handleViewTaskDetail(task)}
                     >
-                      <div className={`flex items-start justify-between mb-2 p-2 rounded-lg ${
+                      <div className={`flex items-start gap-2 mb-2 p-2 rounded-lg ${
                         reworkCardClass ? '' :
                         task.performance_flag_type === 'red' ? 'bg-red-50' :
                         task.performance_flag_type === 'orange' ? 'bg-orange-50' :
                         task.performance_flag_type === 'yellow' ? 'bg-yellow-50' :
                         task.performance_flag_type === 'green' ? 'bg-green-50' : ''
                       }`}>
+                        {renderTaskCheckbox(task, 'mt-1')}
                         <div className="flex flex-col min-w-0 flex-1">
                           <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
                           {(task.component_path || task.grade_name) && (
@@ -907,7 +1027,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                       const daysOverdue = Math.abs(getDaysUntilDue(task) || 0);
                       return (
                         <div key={task.id} className="p-3 border border-red-200 bg-red-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
-                          <div className="flex items-start justify-between mb-1.5">
+                          <div className="flex items-start gap-2 mb-1.5">
+                            {renderTaskCheckbox(task, 'mt-0.5')}
                             <div className="min-w-0 flex-1 mr-2">
                               <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
                               {(task.component_path || task.grade_name) && (
@@ -982,7 +1103,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                       const isResubmitted = (task.status || '').toLowerCase().replace(/_/g, '-') === 'resubmitted';
                       return (
                         <div key={task.id} className="p-3 border border-orange-200 bg-orange-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
-                          <div className="flex items-start justify-between mb-1.5">
+                          <div className="flex items-start gap-2 mb-1.5">
+                            {renderTaskCheckbox(task, 'mt-0.5')}
                             <div className="min-w-0 flex-1 mr-2">
                               <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
                               {(task.component_path || task.grade_name) && (
@@ -1049,7 +1171,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                       const days = getDaysUntilDue(task);
                       return (
                         <div key={task.id} className="p-3 border border-blue-200 bg-blue-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
-                          <div className="flex items-start justify-between mb-1.5">
+                          <div className="flex items-start gap-2 mb-1.5">
+                            {renderTaskCheckbox(task, 'mt-0.5')}
                             <div className="min-w-0 flex-1 mr-2">
                               <h4 className="font-medium text-gray-900 text-sm line-clamp-2">{task.name}</h4>
                               {(task.component_path || task.grade_name) && (
@@ -1113,7 +1236,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {(showAllCompletedTasks ? completedTasks : completedTasks.slice(0, 6)).map((task) => (
                       <div key={task.id} className="p-4 border border-green-200 bg-green-50 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleViewTaskDetail(task)}>
-                        <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-start gap-2 mb-2">
+                          {renderTaskCheckbox(task, 'mt-0.5')}
                           <div className="min-w-0 flex-1 mr-2">
                             <h4 className="font-medium text-gray-900 line-clamp-2">{task.name}</h4>
                             {(task.component_path || task.grade_name) && (

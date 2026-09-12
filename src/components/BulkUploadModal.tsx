@@ -27,6 +27,10 @@ interface ParsedRow {
   'Due Date'?: string;
   Assignees?: string;
   'File Location'?: string;
+  Grade?: string;
+  Book?: string;
+  Unit?: string;
+  Lesson?: string;
 }
 
 interface RowError {
@@ -65,6 +69,10 @@ function downloadTemplate() {
     'Due Date',
     'Assignees',
     'File Location',
+    'Grade',
+    'Book',
+    'Unit',
+    'Lesson',
   ];
 
   const example = [
@@ -79,6 +87,10 @@ function downloadTemplate() {
     '2026-04-22',
     'john@example.com, jane@example.com',
     '\\\\Server\\Projects\\Byline\\Assets',
+    'Grade 1',
+    'Math Book 1',
+    'Numbers',
+    'Counting 1-10',
   ];
 
   const ws = XLSX.utils.aoa_to_sheet([headers, example]);
@@ -132,6 +144,20 @@ function validateRows(rows: ParsedRow[]): RowError[] {
       if (isNaN(h) || h < 0) {
         errors.push({ row: r, error: 'Estimated Hours must be a positive number' });
       }
+    }
+
+    const grade = row.Grade?.toString().trim();
+    const book = row.Book?.toString().trim();
+    const unit = row.Unit?.toString().trim();
+    const lesson = row.Lesson?.toString().trim();
+    if ((book || unit || lesson) && !grade) {
+      errors.push({ row: r, error: 'Grade is required when Book, Unit, or Lesson is provided' });
+    }
+    if ((unit || lesson) && !book) {
+      errors.push({ row: r, error: 'Book is required when Unit or Lesson is provided' });
+    }
+    if (lesson && !unit) {
+      errors.push({ row: r, error: 'Unit is required when Lesson is provided' });
     }
   });
 
@@ -269,6 +295,10 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             'Due Date': parseDate(row['Due Date']) || dateToLocalYMD(new Date(Date.now() + 7 * 86400000)),
             Assignees: normalize(row['Assignees']),
             'File Location': normalize(row['File Location']),
+            Grade: normalize(row.Grade ?? row['Level 1 (Grade)']),
+            Book: normalize(row.Book ?? row['Level 2 (Book)']),
+            Unit: normalize(row.Unit ?? row['Level 3 (Unit)']),
+            Lesson: normalize(row.Lesson ?? row['Level 4 (Lesson)']),
           };
         });
 
@@ -389,7 +419,8 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
             {/* Template field reference */}
             <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3">
               <p className="font-semibold text-gray-700 mb-1">Template columns:</p>
-              <p>Task Name* | Description | Project* | Stage* | Status | Priority | Estimated Hours | Start Date (YYYY-MM-DD) | Due Date (YYYY-MM-DD) | Assignees (comma-separated emails) | File Location</p>
+              <p>Task Name* | Description | Project* | Stage* | Status | Priority | Estimated Hours | Start Date (YYYY-MM-DD) | Due Date (YYYY-MM-DD) | Assignees (comma-separated emails) | File Location | Grade | Book | Unit | Lesson</p>
+              <p className="mt-1">Optional hierarchy columns auto-tag tasks to Educational Hierarchy (names must match existing hierarchy for the project).</p>
               <p className="mt-1">Valid Status: {VALID_STATUSES.join(', ')}</p>
               <p>Valid Priority: {VALID_PRIORITIES.join(', ')}</p>
             </div>
@@ -452,6 +483,10 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
                     <th className="px-3 py-2 text-left text-gray-500 font-medium">Due Date</th>
                     <th className="px-3 py-2 text-left text-gray-500 font-medium">Assignees</th>
                     <th className="px-3 py-2 text-left text-gray-500 font-medium">File Location</th>
+                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Grade</th>
+                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Book</th>
+                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Unit</th>
+                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Lesson</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -478,6 +513,10 @@ export function BulkUploadModal({ isOpen, onClose, onSuccess, projects, teamMemb
                         <td className="px-3 py-2 text-gray-600">{row['Due Date']}</td>
                         <td className="px-3 py-2 text-gray-500 max-w-[140px] truncate">{row['Assignees']}</td>
                         <td className="px-3 py-2 text-gray-500 max-w-[160px] truncate font-mono text-xs">{row['File Location'] || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-purple-600 max-w-[100px] truncate">{row.Grade || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-purple-600 max-w-[100px] truncate">{row.Book || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-purple-600 max-w-[100px] truncate">{row.Unit || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-3 py-2 text-purple-600 max-w-[100px] truncate">{row.Lesson || <span className="text-gray-300">—</span>}</td>
                       </tr>
                     );
                   })}

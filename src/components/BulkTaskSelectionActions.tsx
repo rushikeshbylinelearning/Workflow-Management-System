@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, CheckCircle2, CheckSquare, Circle, PauseCircle, PlayCircle, Trash2, UserCheck } from 'lucide-react';
+import { CalendarDays, CheckCircle2, CheckSquare, Circle, MessageSquare, PauseCircle, PlayCircle, Trash2, UserCheck } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { useToast } from './ui/Toast';
 import { taskService } from '../services/apiService';
 import { getTaskStatusLabel } from '../utils/taskStatusDisplay';
+import { BulkRemarkModal } from './BulkRemarkModal';
+import { getBulkSelectionLimit } from '../utils/bulkRemark';
 
 type BulkStatus = 'on-hold' | 'in-progress' | 'not-started' | 'completed';
 
@@ -17,9 +19,12 @@ interface TeamMemberOption {
 interface BulkTaskSelectionActionsProps {
   selectedTaskIds: Array<string | number>;
   selectedTaskNames: string[];
+  selectedTasks?: any[];
   teamMembers: TeamMemberOption[];
   onSuccess: () => Promise<void> | void;
   onDelete?: () => void;
+  /** Assignees only get Bulk Add Remark — not status/reassign/delete. */
+  assigneeMode?: boolean;
 }
 
 const COMPACT_BTN = 'flex-shrink-0 whitespace-nowrap';
@@ -65,15 +70,18 @@ function isActiveMember(member: TeamMemberOption): boolean {
 export function BulkTaskSelectionActions({
   selectedTaskIds,
   selectedTaskNames,
+  selectedTasks = [],
   teamMembers,
   onSuccess,
   onDelete,
+  assigneeMode = false,
 }: BulkTaskSelectionActionsProps) {
   const { showToast } = useToast();
   const [pendingStatus, setPendingStatus] = useState<BulkStatus | null>(null);
   const [pendingApprove, setPendingApprove] = useState(false);
   const [isReassignOpen, setIsReassignOpen] = useState(false);
   const [isDatesOpen, setIsDatesOpen] = useState(false);
+  const [isRemarkOpen, setIsRemarkOpen] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [assigneeSearch, setAssigneeSearch] = useState('');
@@ -82,6 +90,7 @@ export function BulkTaskSelectionActions({
 
   const taskIds = useMemo(() => parseSelectedIds(selectedTaskIds), [selectedTaskIds]);
   const count = taskIds.length;
+  const remarkLimit = getBulkSelectionLimit(!assigneeMode);
 
   const activeMembers = useMemo(
     () => teamMembers.filter((member) => member.name && isActiveMember(member)),
@@ -235,7 +244,7 @@ export function BulkTaskSelectionActions({
   return (
     <>
       <div className="flex flex-wrap items-center gap-1.5 justify-end">
-        {STATUS_ACTIONS.map((action) => (
+        {!assigneeMode && STATUS_ACTIONS.map((action) => (
           <Button
             key={action.status}
             variant="outline"
@@ -248,47 +257,67 @@ export function BulkTaskSelectionActions({
             {action.label}
           </Button>
         ))}
+        {!assigneeMode && (
+          <>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() => setPendingApprove(true)}
+              className={`${COMPACT_BTN} border-emerald-300 text-emerald-700 hover:bg-emerald-50`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+              Approve
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() => setPendingStatus('completed')}
+              className={`${COMPACT_BTN} border-green-300 text-green-700 hover:bg-green-50`}
+            >
+              <CheckSquare className="w-3.5 h-3.5 mr-1" />
+              Completed
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() => setIsReassignOpen(true)}
+              className={`${COMPACT_BTN} border-indigo-300 text-indigo-700 hover:bg-indigo-50`}
+            >
+              <UserCheck className="w-3.5 h-3.5 mr-1" />
+              Reassigned
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() => setIsDatesOpen(true)}
+              className={`${COMPACT_BTN} border-teal-300 text-teal-700 hover:bg-teal-50`}
+            >
+              <CalendarDays className="w-3.5 h-3.5 mr-1" />
+              Dates
+            </Button>
+          </>
+        )}
         <Button
           variant="outline"
           size="xs"
           disabled={busy}
-          onClick={() => setPendingApprove(true)}
-          className={`${COMPACT_BTN} border-emerald-300 text-emerald-700 hover:bg-emerald-50`}
+          onClick={() => {
+            if (count > remarkLimit) {
+              showToast(`Select at most ${remarkLimit} tasks to add remarks in bulk.`, 'error');
+              return;
+            }
+            setIsRemarkOpen(true);
+          }}
+          className={`${COMPACT_BTN} border-purple-300 text-purple-700 hover:bg-purple-50`}
         >
-          <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-          Approve
+          <MessageSquare className="w-3.5 h-3.5 mr-1" />
+          Add Remark
         </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={busy}
-          onClick={() => setPendingStatus('completed')}
-          className={`${COMPACT_BTN} border-green-300 text-green-700 hover:bg-green-50`}
-        >
-          <CheckSquare className="w-3.5 h-3.5 mr-1" />
-          Completed
-        </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={busy}
-          onClick={() => setIsReassignOpen(true)}
-          className={`${COMPACT_BTN} border-indigo-300 text-indigo-700 hover:bg-indigo-50`}
-        >
-          <UserCheck className="w-3.5 h-3.5 mr-1" />
-          Reassigned
-        </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={busy}
-          onClick={() => setIsDatesOpen(true)}
-          className={`${COMPACT_BTN} border-teal-300 text-teal-700 hover:bg-teal-50`}
-        >
-          <CalendarDays className="w-3.5 h-3.5 mr-1" />
-          Dates
-        </Button>
-        {onDelete && (
+        {!assigneeMode && onDelete && (
           <Button
             variant="danger"
             size="xs"
@@ -531,6 +560,21 @@ export function BulkTaskSelectionActions({
           </div>
         </div>
       </Modal>
+
+      <BulkRemarkModal
+        isOpen={isRemarkOpen}
+        taskIds={taskIds}
+        selectedTasks={selectedTasks}
+        onClose={() => setIsRemarkOpen(false)}
+        onSuccess={async (updatedCount) => {
+          setIsRemarkOpen(false);
+          showToast(
+            `${updatedCount} task${updatedCount !== 1 ? 's' : ''} updated`,
+            'success'
+          );
+          await onSuccess();
+        }}
+      />
     </>
   );
 }

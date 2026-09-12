@@ -23,6 +23,8 @@ const {
   getBulkCreatePreview,
   bulkCreateTasks,
   bulkUploadTasks,
+  bulkTagTasks,
+  bulkUpdateTasks,
   bulkAssignTasks,
   bulkUpdateTaskStatus,
   bulkReassignTasks,
@@ -34,6 +36,8 @@ const {
   reviewExtensionRequest,
   // Remark endpoints
   addTaskRemark,
+  getBulkRemarkDefaults,
+  bulkAddTaskRemarks,
   getTaskRemarks,
   deleteTaskRemark,
   getNotifications,
@@ -323,6 +327,18 @@ const queryValidation = [
 // Must be registered BEFORE /:id so the path is not treated as an ID param.
 router.get('/dashboard-summary', requireAuth, getDashboardSummary);
 
+// Bulk remark defaults — must be registered BEFORE /:id
+router.get('/bulk-remark-defaults',
+  requireAuth,
+  [
+    query('taskIds')
+      .notEmpty()
+      .withMessage('taskIds is required'),
+  ],
+  handleValidationErrors,
+  getBulkRemarkDefaults
+);
+
 // Test stage filter endpoint
 router.get('/test/stage-filter', testStageFilter);
 
@@ -360,6 +376,63 @@ router.post('/project/:project_id/bulk-create',
 router.post('/bulk-upload',
   requireAdminOrPMAuth,
   bulkUploadTasks
+);
+
+// Bulk tag existing tasks with educational hierarchy by Task ID
+router.post('/bulk-tag',
+  requireAdminOrPMAuth,
+  bulkTagTasks
+);
+
+// Bulk update existing tasks by Task ID — never creates tasks
+router.post('/bulk-update',
+  requireAdminOrPMAuth,
+  bulkUpdateTasks
+);
+
+router.post('/bulk-remark',
+  requireAuth,
+  [
+    body('updates')
+      .isArray({ min: 1, max: 100 })
+      .withMessage('updates must be a non-empty array of at most 100 items'),
+    body('updates.*.taskId')
+      .isInt({ min: 1 })
+      .withMessage('Each update must include a positive taskId'),
+    body('updates.*.remark')
+      .trim()
+      .notEmpty()
+      .withMessage('Remark is required for each update')
+      .custom((value) => {
+        if (value.length > REMARK_MAX_HTML_LENGTH) {
+          throw new Error(`Remark must not exceed ${REMARK_MAX_HTML_LENGTH} characters`);
+        }
+        const plainText = stripHtml(value);
+        if (!plainText) {
+          throw new Error('Remark content is required');
+        }
+        if (plainText.length > REMARK_MAX_PLAIN_LENGTH) {
+          throw new Error(`Remark must not exceed ${REMARK_MAX_PLAIN_LENGTH} characters of text`);
+        }
+        return true;
+      }),
+    body('updates.*.stage')
+      .optional()
+      .isIn(['general', 'complete', 'skipped', 'other'])
+      .withMessage('Stage must be one of: general, complete, skipped, other'),
+    body('updates.*.fileLocation')
+      .optional()
+      .isString()
+      .isLength({ max: 500 })
+      .withMessage('File location must not exceed 500 characters'),
+    body('updates.*.fileName')
+      .optional()
+      .isString()
+      .isLength({ max: 255 })
+      .withMessage('File name must not exceed 255 characters'),
+  ],
+  handleValidationErrors,
+  bulkAddTaskRemarks
 );
 
 // Export tasks to Excel (all or filtered)

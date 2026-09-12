@@ -5,6 +5,7 @@
             withTransaction,
             cascadeDeleteGrade
           } = require('../utils/hierarchyDeleteGuard');
+          const { exportEducationalHierarchyToExcel } = require('../services/hierarchyExportService');
 
           // Get all grades for a project
           const getGradesByProject = async (req, res) => {
@@ -567,6 +568,41 @@
             }
           };
 
+          const exportHierarchy = async (req, res) => {
+            try {
+              const { projectId } = req.params;
+              const parsedProjectId = parseInt(projectId, 10);
+
+              if (Number.isNaN(parsedProjectId) || parsedProjectId <= 0) {
+                return res.status(400).json({
+                  success: false,
+                  error: { message: 'Valid project ID is required' },
+                });
+              }
+
+              const { buffer, projectName, rowCount } = await exportEducationalHierarchyToExcel(parsedProjectId);
+              const safeName = String(projectName).replace(/[^a-zA-Z0-9_-]+/g, '_').substring(0, 60);
+              const filename = `educational_hierarchy_${safeName}_${parsedProjectId}.xlsx`;
+
+              res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+              res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+              res.setHeader('X-Export-Row-Count', String(rowCount));
+              res.send(Buffer.from(buffer));
+            } catch (error) {
+              console.error('Error exporting educational hierarchy:', error);
+              const status = error.message === 'Project not found' ? 404 : 500;
+              res.status(status).json({
+                success: false,
+                error: {
+                  message: error.message === 'Project not found'
+                    ? 'Project not found'
+                    : 'Failed to export educational hierarchy',
+                  details: error.message,
+                },
+              });
+            }
+          };
+
           module.exports = {
             getGradesByProject,
             getAllGrades,
@@ -575,5 +611,6 @@
             updateGrade,
             deleteGrade,
             distributeWeights,
-            bulkUpload
+            bulkUpload,
+            exportHierarchy,
           };

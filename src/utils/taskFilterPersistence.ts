@@ -22,6 +22,10 @@ const DEFAULT_FILTERS: TaskFilters = {
   assignees: [],
   dateRangeStart: '',
   dateRangeEnd: '',
+  gradeId: '',
+  bookId: '',
+  unitId: '',
+  lessonId: '',
 };
 
 function isValidFilters(value: unknown): value is TaskFilters {
@@ -52,6 +56,10 @@ export function loadTaskManagerState(): PersistedTaskManagerState | null {
         team: parsed.filters.team ?? 'all',
         dateRangeStart: parsed.filters.dateRangeStart ?? '',
         dateRangeEnd: parsed.filters.dateRangeEnd ?? '',
+        gradeId: parsed.filters.gradeId ?? '',
+        bookId: parsed.filters.bookId ?? '',
+        unitId: parsed.filters.unitId ?? '',
+        lessonId: parsed.filters.lessonId ?? '',
       },
       currentPage: typeof parsed.currentPage === 'number' && parsed.currentPage >= 1 ? parsed.currentPage : 1,
       pageSize: typeof parsed.pageSize === 'number' && parsed.pageSize >= 1 ? parsed.pageSize : 10,

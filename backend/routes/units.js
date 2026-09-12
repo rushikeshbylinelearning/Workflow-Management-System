@@ -1,30 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const unitController = require('../controllers/unitController');
-const { requireAdminOrPMAuth } = require('../middleware/auth');
+const { requireAuth, requireAdminOrPMAuth } = require('../middleware/auth');
 
-// Apply authentication middleware to all routes (admin or project manager)
-router.use(requireAdminOrPMAuth);
+// Read — any authenticated user (admin, PM, or team member) so task tag filters work
+router.get('/book/:bookId', requireAuth, unitController.getUnitsByBook);
+router.get('/', requireAuth, unitController.getAllUnits);
+router.get('/:id', requireAuth, unitController.getUnitById);
 
-// Get all units for a book
-router.get('/book/:bookId', unitController.getUnitsByBook);
-
-// Auto-distribute weights for units in a book — MUST be before /:id
-router.post('/distribute-weights', unitController.distributeWeights);
-
-// Get all units
-router.get('/', unitController.getAllUnits);
-
-// Get unit by ID
-router.get('/:id', unitController.getUnitById);
-
-// Create new unit
-router.post('/', unitController.createUnit);
-
-// Update unit
-router.put('/:id', unitController.updateUnit);
-
-// Delete unit
-router.delete('/:id', unitController.deleteUnit);
+// Mutations — admin or project manager
+router.post('/distribute-weights', requireAdminOrPMAuth, unitController.distributeWeights);
+router.post('/', requireAdminOrPMAuth, unitController.createUnit);
+router.put('/:id', requireAdminOrPMAuth, unitController.updateUnit);
+router.delete('/:id', requireAdminOrPMAuth, unitController.deleteUnit);
 
 module.exports = router;

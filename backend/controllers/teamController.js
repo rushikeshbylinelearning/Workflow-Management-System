@@ -138,13 +138,22 @@ const getMyTasks = async (req, res) => {
     `, [teamMemberId, teamMemberId]);
 
     // Process the tasks to format arrays and add computed fields
-    const processedTasks = reworkService.attachReworkFieldsBatch(tasks.map(task => ({
+    const processedTasks = reworkService.attachReworkFieldsBatch(tasks.map(task => {
+      const tags = [
+        task.component_path,
+        [task.grade_name, task.book_name, task.unit_name, task.lesson_name].filter(Boolean).join(' > '),
+      ].map((value) => (typeof value === 'string' ? value.trim() : '')).find(Boolean) || '';
+      return {
       ...task,
       required_skills: task.required_skills ? task.required_skills.split(',') : [],
       grade_name: task.grade_name || null,
       book_name: task.book_name || null,
       unit_name: task.unit_name || null,
       lesson_name: task.lesson_name || null,
+      tags,
+      component_path: (typeof task.component_path === 'string' && task.component_path.trim())
+        ? task.component_path.trim()
+        : (tags || task.component_path || null),
       // Add computed fields
       is_overdue: (() => {
         if (!task.end_date || task.status === 'completed') return false;
@@ -163,7 +172,8 @@ const getMyTasks = async (req, res) => {
       days_until_due: task.end_date ? Math.ceil((new Date(task.end_date) - new Date()) / (1000 * 60 * 60 * 24)) : null,
       priority_color: task.priority === 'urgent' ? 'red' : task.priority === 'high' ? 'orange' : task.priority === 'medium' ? 'blue' : 'gray',
       status_color: task.status === 'completed' ? 'green' : task.status === 'in-progress' ? 'blue' : task.status === 'under-review' ? 'yellow' : task.status === 'blocked' ? 'red' : task.status === 'on-hold' ? 'gray' : 'gray'
-    })));
+      };
+    }));
 
     res.json({
       success: true,

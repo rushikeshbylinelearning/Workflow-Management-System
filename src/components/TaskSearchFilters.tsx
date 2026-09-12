@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Search, X, ChevronDown, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import { HierarchyTagSearch } from './HierarchyTagSearch';
+import {
+  HierarchyTagItem,
+  findHierarchyTagItem,
+  isHierarchyFilterActive,
+} from '../utils/educationalHierarchy';
 
 export interface TaskFilters {
   search: string;
@@ -13,6 +19,10 @@ export interface TaskFilters {
   assignees: string[]; // Multiple assignee IDs, or 'none' for unassigned
   dateRangeStart?: string; // Custom date range: YYYY-MM-DD (filters by due date)
   dateRangeEnd?: string; // Custom date range: YYYY-MM-DD (filters by due date)
+  gradeId?: string;
+  bookId?: string;
+  unitId?: string;
+  lessonId?: string;
 }
 
 interface TaskSearchFiltersProps {
@@ -22,6 +32,7 @@ interface TaskSearchFiltersProps {
   projectStages: Array<{ id: number | string; name: string }>;
   teamMembers: Array<{ id: number | string; name: string }>;
   teams?: Array<{ id: number | string; name: string }>;
+  hierarchyTagItems?: HierarchyTagItem[];
   loadingProjectStages?: boolean;
   onAddTask?: () => void;
   showAssigneeFilter?: boolean;
@@ -39,6 +50,10 @@ const EMPTY_FILTERS: TaskFilters = {
   assignees: [],
   dateRangeStart: '',
   dateRangeEnd: '',
+  gradeId: '',
+  bookId: '',
+  unitId: '',
+  lessonId: '',
 };
 
 const STATUS_OPTIONS = [
@@ -375,6 +390,7 @@ export function TaskSearchFilters({
   projectStages,
   teamMembers,
   teams = [],
+  hierarchyTagItems = [],
   loadingProjectStages = false,
   onAddTask,
   showAssigneeFilter = true,
@@ -421,8 +437,24 @@ export function TaskSearchFilters({
   // Stable setter for all non-search filters
   const setFilter = useCallback((key: keyof TaskFilters, value: string) => {
     const next = { ...filtersRef.current, [key]: value };
-    if (key === 'project') next.stage = 'all';
+    if (key === 'project') {
+      next.stage = 'all';
+      next.gradeId = '';
+      next.bookId = '';
+      next.unitId = '';
+      next.lessonId = '';
+    }
     onFiltersChangeRef.current(next);
+  }, []);
+
+  const clearHierarchyFilter = useCallback(() => {
+    onFiltersChangeRef.current({
+      ...filtersRef.current,
+      gradeId: '',
+      bookId: '',
+      unitId: '',
+      lessonId: '',
+    });
   }, []);
 
   // Stable reset — clears both local search and all filters
@@ -443,6 +475,7 @@ export function TaskSearchFilters({
     filters.team !== 'all',
     (filters.assignees?.length ?? 0) > 0,
     !!filters.dateRangeStart || !!filters.dateRangeEnd,
+    isHierarchyFilterActive(filters),
   ].filter(Boolean).length;
 
   const hasAnyFilter = activeFilterCount > 0 || filters.search !== '';
@@ -497,6 +530,19 @@ export function TaskSearchFilters({
     const startLabel = filters.dateRangeStart ? filters.dateRangeStart : 'Start';
     const endLabel = filters.dateRangeEnd ? filters.dateRangeEnd : 'End';
     activeChips.push({ label: `Date Range: ${startLabel} to ${endLabel}`, key: 'dateRangeStart' });
+  }
+  if (isHierarchyFilterActive(filters)) {
+    const tag = findHierarchyTagItem(
+      hierarchyTagItems,
+      filters.gradeId,
+      filters.bookId,
+      filters.unitId,
+      filters.lessonId
+    );
+    activeChips.push({
+      label: tag ? `Tag: ${tag.name}` : 'Tag: Selected',
+      key: 'gradeId',
+    });
   }
 
   const stageOptions: Array<{ value: string; label: string }> = [
@@ -660,7 +706,33 @@ export function TaskSearchFilters({
           )}
         </div>
 
-        {/* Row 3: custom due date range */}
+        {/* Row 3: educational hierarchy tag */}
+        <div className="grid grid-cols-1 lg:grid-cols-[7.5rem_1fr] gap-2 lg:gap-3 items-center">
+          <span className="text-xs font-medium text-gray-500">Tag</span>
+          <HierarchyTagSearch
+            variant="filter"
+            items={hierarchyTagItems}
+            gradeId={filters.gradeId ?? ''}
+            bookId={filters.bookId ?? ''}
+            unitId={filters.unitId ?? ''}
+            lessonId={filters.lessonId ?? ''}
+            disabled={filters.project === 'all'}
+            emptyLabel="All Tags"
+            disabledPlaceholder="Select project first"
+            placeholder="Search tags by grade, book, unit, or lesson..."
+            onChange={(selection) =>
+              onFiltersChangeRef.current({
+                ...filtersRef.current,
+                gradeId: selection.gradeId,
+                bookId: selection.bookId,
+                unitId: selection.unitId,
+                lessonId: selection.lessonId,
+              })
+            }
+          />
+        </div>
+
+        {/* Row 4: custom due date range */}
         <div className="grid grid-cols-1 lg:grid-cols-[7.5rem_1fr] gap-2 lg:gap-3 items-center pt-2 border-t border-gray-50">
           <span className="text-xs font-medium text-gray-500">Due between</span>
           <DateRangePicker
@@ -690,6 +762,8 @@ export function TaskSearchFilters({
                     onFiltersChangeRef.current({ ...filtersRef.current, assignees: [] });
                   } else if (chip.key === 'priorities') {
                     onFiltersChangeRef.current({ ...filtersRef.current, priorities: [] });
+                  } else if (chip.key === 'gradeId') {
+                    clearHierarchyFilter();
                   } else {
                     setFilter(chip.key, 'all');
                   }
