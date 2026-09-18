@@ -81,9 +81,17 @@ const getMembersWithPermissions = async (req, res) => {
       ORDER BY tm.name ASC
     `);
 
+    const remarkOptions = require('../services/remarkOptionsService');
+    const assignedByMember = await remarkOptions.getAssignedOptionIdsByMember(
+      members.map((member) => member.id)
+    );
+
     // For each member, get permissions
     for (const member of members) {
       member.skills = member.skills ? member.skills.split(',') : [];
+      const assignedIds = assignedByMember[member.id] || [];
+      member.remark_option_ids = assignedIds;
+      member.uses_default_remark_options = assignedIds.length === 0;
 
       const perms = await db.query(
         'SELECT permission_key, is_granted FROM team_member_permissions WHERE team_member_id = ?',

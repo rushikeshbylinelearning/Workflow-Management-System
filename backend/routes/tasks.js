@@ -418,8 +418,11 @@ router.post('/bulk-remark',
       }),
     body('updates.*.stage')
       .optional()
-      .isIn(['general', 'complete', 'skipped', 'other'])
-      .withMessage('Stage must be one of: general, complete, skipped, other'),
+      .isString()
+      .trim()
+      .isLength({ min: 1, max: 64 })
+      .matches(/^[a-z0-9][a-z0-9_-]*$/i)
+      .withMessage('Stage must be a valid remark option'),
     body('updates.*.fileLocation')
       .optional()
       .isString()
@@ -735,8 +738,11 @@ router.post('/:id/remarks',
       .withMessage('Remark date must be a valid date'),
     body('remark_type')
       .optional()
-      .isIn(['general', 'complete', 'skipped', 'other'])
-      .withMessage('Remark type must be one of: general, complete, skipped, other'),
+      .isString()
+      .trim()
+      .isLength({ min: 1, max: 64 })
+      .matches(/^[a-z0-9][a-z0-9_-]*$/i)
+      .withMessage('Remark type must be a valid option'),
     body('is_private')
       .optional()
       .isBoolean()

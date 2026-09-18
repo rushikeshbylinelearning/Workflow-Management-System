@@ -1091,7 +1091,6 @@ const reviewExtensionRequest = async (req, res) => {
 // TASK REMARKS CONTROLLERS
 // =====================================================
 
-const VALID_REMARK_TYPES = new Set(['general', 'complete', 'skipped', 'other']);
 // TODO(Bulk Add Remark spec §7): max row cap is config-driven and easy to change.
 const MAX_BULK_REMARK_ROWS = 50;
 const MAX_BULK_REMARK_ROWS_ADMIN = 100;
@@ -1128,7 +1127,12 @@ async function applyTaskRemark({
   const id = taskId;
   const added_by = user?.id;
   const added_by_type = user?.type || 'team';
-  const type = VALID_REMARK_TYPES.has(remark_type) ? remark_type : 'general';
+  const option = await remarkOptions.resolveOptionForUser(remark_type, user);
+  if (!option) {
+    throw httpError(400, 'VALIDATION_ERROR', 'Invalid or unavailable remark type');
+  }
+  const type = option.slug;
+  const statusEffect = option.status_effect || 'none';
 
   if (!remark || !String(remark).trim()) {
     throw httpError(400, 'VALIDATION_ERROR', 'Remark content is required');
@@ -1162,13 +1166,13 @@ async function applyTaskRemark({
     );
     insertId = insertResult.insertId;
 
-    // complete → under-review; skipped → skipped;
-    // general ("General / In Progress") promotes not-started → in-progress (50%)
-    if (type === 'complete') {
+    // Built-in + custom options use status_effect:
+    // under-review (Completed), skipped, in-progress (from not-started), or none.
+    if (statusEffect === 'under-review') {
       newStatus = 'under-review';
-    } else if (type === 'skipped') {
+    } else if (statusEffect === 'skipped') {
       newStatus = 'skipped';
-    } else if (type === 'general' && previousStatus === 'not-started') {
+    } else if (statusEffect === 'in-progress' && previousStatus === 'not-started') {
       newStatus = 'in-progress';
     }
 
@@ -1214,7 +1218,7 @@ async function applyTaskRemark({
       );
       const submitterName = userResult[0]?.name || 'Unknown User';
 
-      if (type === 'complete') {
+      if (statusEffect === 'under-review') {
         await global.notificationServer.notifyTaskSubmission({
           task_id: id,
           task_name: taskRow.name,

@@ -28,6 +28,7 @@ const PREFERRED_ORDER = [
   'add_task_rework_count.sql',
   'add_task_resubmission_deadline.sql',
   'add_remark_fields.sql',
+  'add_remark_options.sql',
   'add_task_remark_history.sql',
   'add_teams_webhook_url.sql',
   'add_active_extension_requests.sql',

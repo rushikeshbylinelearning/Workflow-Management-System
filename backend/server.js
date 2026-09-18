@@ -174,6 +174,9 @@ app.use('/api/search', searchRoutes);
 const accessRoutes = require('./routes/access');
 app.use('/api/access', accessRoutes);
 
+const remarkOptionsRoutes = require('./routes/remarkOptions');
+app.use('/api/remark-options', remarkOptionsRoutes);
+
 const dashboardRoutes = require('./routes/dashboard');
 app.use('/api/dashboard', dashboardRoutes);
 
