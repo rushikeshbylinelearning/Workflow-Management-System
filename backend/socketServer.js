@@ -3,6 +3,11 @@ const jwt = require('jsonwebtoken');
 
 class NotificationServer {
   constructor(server) {
+    const extraOrigins = (process.env.CORS_ORIGIN || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+
     this.io = new Server(server, {
       path: '/api/socket.io/',
       cors: {
@@ -14,6 +19,7 @@ class NotificationServer {
           "http://localhost:5177",
           "http://workflow.bylinelms.com",
           "https://workflow.bylinelms.com",
+          ...extraOrigins,
         ],
         methods: ["GET", "POST", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],

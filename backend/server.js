@@ -339,7 +339,9 @@ app.use('/api/*', (req, res) => {
 // SPA fallback — serve index.html for all non-API routes so client-side
 // routing works correctly on page refresh or direct URL access.
 const path = require('path');
-const FRONTEND_DIST = path.join(__dirname, '..', 'dist');
+const FRONTEND_DIST = process.env.FRONTEND_DIR
+  ? path.resolve(process.env.FRONTEND_DIR)
+  : path.join(__dirname, '..', 'dist');
 app.use(express.static(FRONTEND_DIST));
 app.use('*', (req, res) => {
   const indexPath = path.join(FRONTEND_DIST, 'index.html');

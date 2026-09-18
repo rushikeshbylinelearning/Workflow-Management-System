@@ -1,15 +1,15 @@
 module.exports = {
   apps: [{
-    name: 'workflow-backend',
+    name: process.env.PM2_APP_NAME || 'workflow-backend',
     script: './server.js',
-    cwd: '/home/bylinelm/workflow.bylinelms.com/backend',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     watch: false,
     max_memory_restart: '500M',
     env: {
-      NODE_ENV: 'production',
-      PORT: 3005
+      NODE_ENV: process.env.NODE_ENV || 'production',
+      PORT: process.env.PORT || 3005
     },
     error_file: './logs/pm2-error.log',
     out_file: './logs/pm2-out.log',

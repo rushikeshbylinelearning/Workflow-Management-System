@@ -1,0 +1,64 @@
+# Force HTTPS for workflow.bylinelms.com
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# CRITICAL: Disable ALL caching for API responses FIRST
+<IfModule mod_headers.c>
+  Header always set Cache-Control "no-store, no-cache, must-revalidate, max-age=0, post-check=0, pre-check=0"
+  Header always set Pragma "no-cache"
+  Header always set Expires "Thu, 01 Jan 1970 00:00:00 GMT"
+
+  <FilesMatch "\.(jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|pdf)$">
+    Header unset Cache-Control
+    Header unset Pragma
+    Header unset Expires
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+
+  <FilesMatch "assets/.*\.(js|css)$">
+    Header unset Cache-Control
+    Header unset Pragma
+    Header unset Expires
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+
+  <FilesMatch "^(index\.html)$">
+    Header unset Cache-Control
+    Header unset Pragma
+    Header unset Expires
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Proxy API requests to the live Node.js backend
+  RewriteCond %{REQUEST_URI} ^/api/
+  RewriteRule ^api/(.*)$ https://workflow.legatolxp.online/api/$1 [P,L,QSA]
+
+  ErrorDocument 502 "API Backend Unavailable - Please ensure Node.js server is running on port 3005"
+  ErrorDocument 503 "API Backend Unavailable - Please ensure Node.js server is running on port 3005"
+
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_URI} !^/api/
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_FILENAME} !-l
+  RewriteRule . /index.html [L]
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript application/json
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set X-XSS-Protection "1; mode=block"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

@@ -12,7 +12,8 @@
     "migrate:create": "node create-migration.js",
     "migrate:status": "node migration-status.js",
     "db:reset": "node reset-database.js",
-    "db:init": "node run-initial-schema.js"
+    "db:init": "node run-initial-schema.js",
+    "db:bootstrap": "node bootstrap-db.js"
   },
   "keywords": [
     "workflow",
