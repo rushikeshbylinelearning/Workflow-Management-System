@@ -1293,6 +1293,195 @@ export function TaskManager() {
     });
   };
 
+  const filteredTasksRef = useRef(filteredTasks);
+  filteredTasksRef.current = filteredTasks;
+  const selectedTasksRef = useRef(selectedTasks);
+  selectedTasksRef.current = selectedTasks;
+  const dragSelectRef = useRef<{
+    active: boolean;
+    anchorIndex: number;
+    lastIndex: number;
+    moved: boolean;
+    startedSelected: boolean;
+    base: Set<string>;
+    scroller: HTMLElement | null;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const dragScrollRafRef = useRef<number | null>(null);
+  const ensureDragScrollRef = useRef<() => void>(() => {});
+
+  const applyDragSelection = useCallback((anchorIndex: number, currentIndex: number, base: Set<string>) => {
+    const tasks = filteredTasksRef.current;
+    const start = Math.min(anchorIndex, currentIndex);
+    const end = Math.max(anchorIndex, currentIndex);
+    const next = new Set(base);
+    const added: any[] = [];
+    for (let i = start; i <= end; i += 1) {
+      const task = tasks[i];
+      if (!task) continue;
+      const id = task.id.toString();
+      if (!next.has(id)) added.push(task);
+      next.add(id);
+    }
+    if (added.length > 0) rememberTasks(added);
+    setSelectedTasks(next);
+  }, [rememberTasks]);
+
+  useEffect(() => {
+    if (!canManageTasks) return;
+
+    const selectIndex = (drag: NonNullable<typeof dragSelectRef.current>, index: number) => {
+      if (Number.isNaN(index) || index === drag.lastIndex) return;
+      drag.lastIndex = index;
+      if (index !== drag.anchorIndex) drag.moved = true;
+      applyDragSelection(drag.anchorIndex, index, drag.base);
+    };
+
+    const selectRowAtPoint = (drag: NonNullable<typeof dragSelectRef.current>, x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      const row = target instanceof Element ? target.closest('tr[data-drag-index]') : null;
+      if (!row) return false;
+      const index = Number(row.getAttribute('data-drag-index'));
+      selectIndex(drag, index);
+      return true;
+    };
+
+    const endDrag = () => {
+      const drag = dragSelectRef.current;
+      if (dragScrollRafRef.current != null) {
+        cancelAnimationFrame(dragScrollRafRef.current);
+        dragScrollRafRef.current = null;
+      }
+      if (!drag?.active) return;
+      drag.active = false;
+      document.body.style.userSelect = '';
+      if (!drag.moved) {
+        const task = filteredTasksRef.current[drag.anchorIndex];
+        if (task) {
+          const id = task.id.toString();
+          if (drag.startedSelected) {
+            setSelectedTasks((prev) => {
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            });
+          } else {
+            rememberTasks([task]);
+            setSelectedTasks((prev) => {
+              const next = new Set(prev);
+              next.add(id);
+              return next;
+            });
+          }
+        }
+      }
+      dragSelectRef.current = null;
+    };
+
+    const scrollDuringDrag = () => {
+      const drag = dragSelectRef.current;
+      if (!drag?.active) return;
+      const scroller = drag.scroller;
+      if (scroller) {
+        const rect = scroller.getBoundingClientRect();
+        const edge = 80;
+        const maxStep = 26;
+        let delta = 0;
+        if (drag.clientY >= rect.bottom - edge) {
+          const depth = Math.min(edge, drag.clientY - (rect.bottom - edge) + 12);
+          delta = Math.max(8, Math.ceil((depth / edge) * maxStep));
+        } else if (drag.clientY <= rect.top + edge) {
+          const depth = Math.min(edge, (rect.top + edge) - drag.clientY + 12);
+          delta = -Math.max(8, Math.ceil((depth / edge) * maxStep));
+        }
+        if (delta !== 0) {
+          const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+          const nextTop = Math.max(0, Math.min(maxScroll, scroller.scrollTop + delta));
+          if (nextTop !== scroller.scrollTop) {
+            scroller.scrollTop = nextTop;
+            const hitRow = selectRowAtPoint(drag, drag.clientX, drag.clientY);
+            if (!hitRow) {
+              const rows = scroller.querySelectorAll('tr[data-drag-index]');
+              let edgeIndex = delta > 0 ? -1 : Number.POSITIVE_INFINITY;
+              rows.forEach((row) => {
+                const rowRect = row.getBoundingClientRect();
+                const index = Number(row.getAttribute('data-drag-index'));
+                if (Number.isNaN(index)) return;
+                if (delta > 0 && rowRect.bottom <= rect.bottom + 4) edgeIndex = Math.max(edgeIndex, index);
+                if (delta < 0 && rowRect.top >= rect.top - 4) edgeIndex = Math.min(edgeIndex, index);
+              });
+              if (edgeIndex !== -1 && edgeIndex !== Number.POSITIVE_INFINITY) selectIndex(drag, edgeIndex);
+            }
+          }
+        }
+      }
+      dragScrollRafRef.current = requestAnimationFrame(scrollDuringDrag);
+    };
+
+    ensureDragScrollRef.current = () => {
+      if (dragScrollRafRef.current != null) return;
+      dragScrollRafRef.current = requestAnimationFrame(scrollDuringDrag);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = dragSelectRef.current;
+      if (!drag?.active) return;
+      drag.clientX = event.clientX;
+      drag.clientY = event.clientY;
+      selectRowAtPoint(drag, event.clientX, event.clientY);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    return () => {
+      if (dragScrollRafRef.current != null) {
+        cancelAnimationFrame(dragScrollRafRef.current);
+        dragScrollRafRef.current = null;
+      }
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+    };
+  }, [canManageTasks, applyDragSelection, rememberTasks]);
+
+  const startRowDragSelect = (index: number, taskId: string, origin: Element, clientX: number, clientY: number) => {
+    const startedSelected = selectedTasksRef.current.has(taskId);
+    let scroller: HTMLElement | null = origin instanceof HTMLElement ? origin : origin.parentElement;
+    while (scroller && scroller !== document.body) {
+      const overflowY = window.getComputedStyle(scroller).overflowY;
+      if ((overflowY === 'auto' || overflowY === 'scroll') && scroller.scrollHeight > scroller.clientHeight + 2) {
+        break;
+      }
+      scroller = scroller.parentElement;
+    }
+    if (scroller === document.body) scroller = null;
+    dragSelectRef.current = {
+      active: true,
+      anchorIndex: index,
+      lastIndex: index,
+      moved: false,
+      startedSelected,
+      base: new Set(selectedTasksRef.current),
+      scroller,
+      clientX,
+      clientY,
+    };
+    document.body.style.userSelect = 'none';
+    ensureDragScrollRef.current();
+    if (!startedSelected) {
+      const task = filteredTasksRef.current[index];
+      if (task) rememberTasks([task]);
+      setSelectedTasks((prev) => {
+        const next = new Set(prev);
+        next.add(taskId);
+        return next;
+      });
+    }
+  };
+
   const applySelection = (source: any[]) => {
     rememberTasks(source);
     setSelectedTasks(new Set(source.map((task) => task.id.toString())));
@@ -1909,7 +2098,7 @@ export function TaskManager() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {filteredTasks.map((task) => {
+                {filteredTasks.map((task, rowIndex) => {
                   // Use assigneeDetails from API response directly (avoids type-mismatch with teamMembers lookup)
                   // Falls back to cross-referencing teamMembers by normalizing IDs to strings
                   const assignedUsers: any[] = task.assigneeDetails && task.assigneeDetails.length > 0
@@ -1947,6 +2136,7 @@ export function TaskManager() {
                   return (
                     <tr
                       key={task.id}
+                      data-drag-index={canManageTasks ? rowIndex : undefined}
                       onClick={() => openTaskDetail(task.id)}
                       className={`cursor-pointer hover:bg-gray-50 ${
                         reworkRowClass ||
@@ -1962,12 +2152,26 @@ export function TaskManager() {
                           <input
                             type="checkbox"
                             checked={selectedTasks.has(task.id.toString())}
+                            title={canManageTasks ? 'Click to select. Drag across rows to select a range.' : 'Select task'}
+                            onPointerDown={canManageTasks ? (e) => {
+                              if (e.button !== 0) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              startRowDragSelect(rowIndex, task.id.toString(), e.currentTarget, e.clientX, e.clientY);
+                            } : undefined}
+                            onKeyDown={canManageTasks ? (e) => {
+                              if (e.key !== ' ' && e.key !== 'Enter') return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleTaskSelection(task.id.toString());
+                            } : undefined}
                             onChange={(e) => {
                               e.stopPropagation();
+                              if (canManageTasks) return;
                               toggleTaskSelection(task.id.toString());
                             }}
                             onClick={(e) => e.stopPropagation()}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                           />
                         </td>
                       )}

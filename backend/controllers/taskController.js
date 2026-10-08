@@ -1516,6 +1516,144 @@ const getBulkRemarkDefaults = async (req, res) => {
   }
 };
 
+const ADMIN_BULK_DECISIONS = {
+  approve: { status: 'completed', label: 'Approve' },
+  reject: { status: 'returned', label: 'Reject' },
+  resubmit: { status: 'redo-requested', label: 'Resubmit' },
+};
+
+const REVIEW_STATUSES_FOR_REWORK = new Set(['under-review', 'submitted', 'resubmitted']);
+
+let decisionRemarkTypesReady = false;
+
+async function ensureDecisionRemarkTypes() {
+  if (decisionRemarkTypesReady) return;
+  const column = await db.queryFirst("SHOW COLUMNS FROM task_remarks LIKE 'remark_type'");
+  const type = String(column?.Type || '').toLowerCase();
+  if (type.startsWith('enum') && !type.includes("'approve'")) {
+    await db.query("ALTER TABLE task_remarks MODIFY COLUMN remark_type VARCHAR(64) DEFAULT 'general'");
+  }
+  decisionRemarkTypesReady = true;
+}
+
+/**
+ * Admin Bulk Add Remark decisions. Updates status and appends a remark.
+ * Does not change task assignees.
+ */
+async function applyAdminBulkDecision({
+  taskId,
+  user,
+  decision,
+  remark,
+  server_location,
+  file_name,
+  extra_fields,
+}) {
+  const spec = ADMIN_BULK_DECISIONS[decision];
+  if (!spec) throw httpError(400, 'VALIDATION_ERROR', 'Invalid decision');
+
+  const taskRow = await db.queryFirst(
+    'SELECT id, status, project_id, rework_count FROM tasks WHERE id = ?',
+    [taskId]
+  );
+  if (!taskRow) throw httpError(404, 'NOT_FOUND', 'Task not found');
+
+  const added_by = user?.id;
+  const added_by_type = user?.type || 'admin';
+  const formattedRemarkDate = getTodayIST();
+  const previousStatus = taskRow.status;
+  const newStatus = spec.status;
+  const locationValue = server_location ? String(server_location) : null;
+  const fileNameValue = file_name ? String(file_name) : null;
+  const extraNormalized = await remarkFields.normalizeExtraFieldValues(extra_fields, user);
+  const extraValues = extraNormalized.values;
+  const extraJson = Object.keys(extraValues).length > 0 ? JSON.stringify(extraValues) : null;
+  const progress = calculateTaskProgress(newStatus);
+  await ensureDecisionRemarkTypes();
+
+  await remarkHistory.runInTransaction(async (conn) => {
+    const remarkParams = [
+      taskId, added_by, added_by_type, formattedRemarkDate, remark, decision, false,
+      locationValue, fileNameValue,
+    ];
+    try {
+      await conn.execute(
+        `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name, extra_fields)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [...remarkParams, extraJson]
+      );
+    } catch (insertErr) {
+      if (!remarkFields.isMissingColumn(insertErr)) throw insertErr;
+      await conn.execute(
+        `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        remarkParams
+      );
+    }
+
+    if (decision === 'approve') {
+      await conn.execute(
+        `UPDATE tasks
+         SET status = ?, progress = ?, rework_count = 0,
+             resubmission_deadline = NULL, resubmission_set_by = NULL, resubmission_set_at = NULL,
+             server_location = IF(? IS NULL, server_location, ?),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [newStatus, progress, locationValue, locationValue, taskId]
+      );
+      await remarkHistory.logReview(user, Number(taskId), 'approve', remark, previousStatus, newStatus, conn);
+      return;
+    }
+
+    const incrementRework = REVIEW_STATUSES_FOR_REWORK.has(previousStatus);
+    if (incrementRework) {
+      await conn.execute(
+        `UPDATE tasks
+         SET rework_count = rework_count + 1, status = ?, progress = ?,
+             server_location = IF(? IS NULL, server_location, ?),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [newStatus, progress, locationValue, locationValue, taskId]
+      );
+      const [rows] = await conn.execute('SELECT rework_count FROM tasks WHERE id = ?', [taskId]);
+      const reworkCount = Number(rows[0]?.rework_count) || (Number(taskRow.rework_count) || 0) + 1;
+      await remarkHistory.logReturnedForRework(
+        user, Number(taskId), remark, previousStatus, newStatus, reworkCount, conn
+      );
+      return;
+    }
+
+    await conn.execute(
+      `UPDATE tasks
+       SET status = ?, progress = ?,
+           server_location = IF(? IS NULL, server_location, ?),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [newStatus, progress, locationValue, locationValue, taskId]
+    );
+    if (decision === 'reject') {
+      await remarkHistory.logReview(user, Number(taskId), 'deny', remark, previousStatus, newStatus, conn);
+    } else {
+      await remarkHistory.logReturnedForRework(
+        user, Number(taskId), remark, previousStatus, newStatus, Number(taskRow.rework_count) || 0, conn
+      );
+    }
+  });
+
+  if (previousStatus !== newStatus && taskRow.project_id) {
+    await recalculateProjectProgress(taskRow.project_id);
+    emitProjectTaskUpdate(taskRow.project_id, taskId, 'updated');
+  }
+  if (previousStatus !== newStatus) taskSummaryCache.invalidateAll();
+
+  return {
+    status: newStatus,
+    progress,
+    extra_fields: extraValues,
+    stageLabel: spec.label,
+  };
+}
+
 const bulkAddTaskRemarks = async (req, res) => {
   try {
     const manager = canManageTasks(req.user);
@@ -1553,15 +1691,46 @@ const bulkAddTaskRemarks = async (req, res) => {
       }
 
       const stage = String(row.stage || row.remark_type || 'general').trim().toLowerCase() || 'general';
+      const fileLocation = row.fileLocation ?? row.server_location ?? '';
+      const fileName = row.fileName ?? row.file_name ?? '';
+      const extraFieldsPayload = row.extraFields ?? row.extra_fields ?? {};
+
+      if (manager && ADMIN_BULK_DECISIONS[stage]) {
+        try {
+          const data = await applyAdminBulkDecision({
+            taskId,
+            user: req.user,
+            decision: stage,
+            remark,
+            server_location: fileLocation,
+            file_name: fileName,
+            extra_fields: extraFieldsPayload,
+          });
+          results.push({ taskId, success: true, status: data.status, progress: data.progress });
+          succeeded.push({
+            taskId,
+            stage,
+            stageLabel: data.stageLabel,
+            fileLocation,
+            fileName,
+            remark,
+            extraFields: data.extra_fields || {},
+          });
+        } catch (rowError) {
+          results.push({
+            taskId,
+            success: false,
+            error: rowError.message || 'Failed to update task',
+          });
+        }
+        continue;
+      }
+
       const option = await remarkOptions.resolveOptionForUser(stage, req.user);
       if (!option) {
         results.push({ taskId, success: false, error: 'Invalid or unavailable stage' });
         continue;
       }
-
-      const fileLocation = row.fileLocation ?? row.server_location ?? '';
-      const fileName = row.fileName ?? row.file_name ?? '';
-      const extraFieldsPayload = row.extraFields ?? row.extra_fields ?? {};
 
       try {
         const data = await applyTaskRemark({

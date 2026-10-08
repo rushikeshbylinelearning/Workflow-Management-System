@@ -577,6 +577,7 @@ export function BulkTaskSelectionActions({
         isOpen={isRemarkOpen}
         taskIds={taskIds}
         selectedTasks={selectedTasks}
+        adminMode={!assigneeMode}
         onClose={() => setIsRemarkOpen(false)}
         onSuccess={async (updatedCount) => {
           setIsRemarkOpen(false);

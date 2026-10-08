@@ -23,6 +23,18 @@ export const SYSTEM_REMARK_OPTIONS: Array<{ value: string; label: string; status
 
 export const BULK_REMARK_STAGE_OPTIONS = SYSTEM_REMARK_OPTIONS;
 
+/** Admin Bulk Add Remark decisions. These do not change the task assignee. */
+export const ADMIN_BULK_REMARK_DECISIONS: Array<{ value: string; label: string; statusEffect?: string }> = [
+  { value: 'approve', label: 'Approve', statusEffect: 'completed' },
+  { value: 'reject', label: 'Reject', statusEffect: 'returned' },
+  { value: 'resubmit', label: 'Resubmit', statusEffect: 'redo-requested' },
+];
+
+export function isClaudeAccountField(field: { slug?: string; label?: string }): boolean {
+  const compact = (value?: string) => String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
+  return compact(field.slug) === 'claudeaccount' || compact(field.label) === 'claudeaccount';
+}
+
 export const EDITABLE_BULK_REMARK_COLUMNS = ['stage', 'fileLocation', 'fileName', 'remark'] as const;
 export type BulkRemarkEditableColumn = string;
 
@@ -115,9 +127,19 @@ export function matchRemarkStage(
     skipped: 'skipped',
     skip: 'skipped',
     other: 'other',
+    approve: 'approve',
+    approved: 'approve',
+    reject: 'reject',
+    rejected: 'reject',
+    deny: 'reject',
+    denied: 'reject',
+    resubmit: 'resubmit',
+    're submit': 'resubmit',
   };
-  if (aliases[normalized]) return aliases[normalized];
   const catalog = options.length > 0 ? options : SYSTEM_REMARK_OPTIONS;
+  if (aliases[normalized] && catalog.some((option) => option.value === aliases[normalized])) {
+    return aliases[normalized];
+  }
   const match = catalog.find((option) => (
     option.value.toLowerCase() === normalized
     || option.label.toLowerCase() === normalized

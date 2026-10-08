@@ -7,7 +7,9 @@ import { taskService } from '../services/apiService';
 import {
   applyPasteGrid,
   BULK_REMARK_STAGE_OPTIONS,
+  ADMIN_BULK_REMARK_DECISIONS,
   formatTaskTags,
+  isClaudeAccountField,
   MAX_BULK_ROWS_ADMIN,
   parseClipboardGrid,
   statusToRemarkStage,
@@ -21,6 +23,8 @@ interface BulkRemarkModalProps {
   selectedTasks?: any[];
   onClose: () => void;
   onSuccess: (updatedCount: number) => Promise<void> | void;
+  /** Admin bulk remark adds Approve / Reject / Resubmit and hides Claude Account. */
+  adminMode?: boolean;
 }
 
 interface BulkRemarkRow {
@@ -63,6 +67,7 @@ export function BulkRemarkModal({
   selectedTasks = [],
   onClose,
   onSuccess,
+  adminMode = false,
 }: BulkRemarkModalProps) {
   const [rows, setRows] = useState<BulkRemarkRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -72,8 +77,13 @@ export function BulkRemarkModal({
   const { showToast } = useToast();
   const { options: stageOptions } = useRemarkOptions();
   const { fields: extraFieldDefs, enforceRequired } = useRemarkFields();
-  const extraSlugs = extraFieldDefs.map((field) => field.slug);
-  const stageCatalog = stageOptions.length > 0 ? stageOptions : BULK_REMARK_STAGE_OPTIONS;
+  const visibleExtraFields = adminMode
+    ? extraFieldDefs.filter((field) => !isClaudeAccountField(field))
+    : extraFieldDefs;
+  const extraSlugs = visibleExtraFields.map((field) => field.slug);
+  const stageCatalog = adminMode
+    ? ADMIN_BULK_REMARK_DECISIONS
+    : (stageOptions.length > 0 ? stageOptions : BULK_REMARK_STAGE_OPTIONS);
   const successCountRef = useRef(0);
   const selectedTasksRef = useRef(selectedTasks);
   selectedTasksRef.current = selectedTasks;
@@ -116,14 +126,18 @@ export function BulkRemarkModal({
               const apiTask = apiById.get(id);
               const fallback = fallbackById.get(id);
               if (!apiTask && !fallback) return null;
-              return toRow(apiTask || fallback, fallback);
+              const row = toRow(apiTask || fallback, fallback);
+              return adminMode ? { ...row, stage: '' } : row;
             })
             .filter((row): row is BulkRemarkRow => !!row)
         );
       } catch (err: any) {
         if (cancelled) return;
         const fallbackRows = selectedTasksRef.current
-          .map((task) => toRow(task, task))
+          .map((task) => {
+            const row = toRow(task, task);
+            return adminMode ? { ...row, stage: '' } : row;
+          })
           .filter((row) => row.taskId > 0);
         if (fallbackRows.length > 0) {
           setRows(fallbackRows);
@@ -141,17 +155,21 @@ export function BulkRemarkModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, idsKey]);
+  }, [isOpen, idsKey, adminMode]);
 
   const missingRemarkCount = useMemo(
     () => rows.filter((row) => !row.remark.trim()).length,
     [rows]
   );
   const missingExtraCount = useMemo(
-    () => rows.filter((row) => missingRequiredRemarkFields(extraFieldDefs, row.extra || {}, enforceRequired).length > 0).length,
-    [rows, extraFieldDefs, enforceRequired]
+    () => rows.filter((row) => missingRequiredRemarkFields(visibleExtraFields, row.extra || {}, enforceRequired).length > 0).length,
+    [rows, visibleExtraFields, enforceRequired]
   );
-  const canSubmit = rows.length > 0 && missingRemarkCount === 0 && missingExtraCount === 0 && !busy && !loading;
+  const missingDecisionCount = useMemo(
+    () => (adminMode ? rows.filter((row) => !['approve', 'reject', 'resubmit'].includes(row.stage)).length : 0),
+    [adminMode, rows]
+  );
+  const canSubmit = rows.length > 0 && missingRemarkCount === 0 && missingExtraCount === 0 && missingDecisionCount === 0 && !busy && !loading;
 
   const updateRow = (taskId: number, patch: Partial<BulkRemarkRow>) => {
     setRows((prev) => prev.map((row) => (
@@ -272,7 +290,7 @@ export function BulkRemarkModal({
         <span className="text-sm text-gray-500">
           {rows.length > 0 ? `${rows.length} task${rows.length !== 1 ? 's' : ''}` : `${Math.min(taskIds.length, MAX_BULK_ROWS_ADMIN)} selected`}
           {' · '}Paste Stage, File Location, File Name
-          {extraFieldDefs.length > 0 ? `, ${extraFieldDefs.map((field) => field.label).join(', ')}` : ''}
+          {visibleExtraFields.length > 0 ? `, ${visibleExtraFields.map((field) => field.label).join(', ')}` : ''}
           {', Remark from Excel'}
         </span>
       }
@@ -290,14 +308,29 @@ export function BulkRemarkModal({
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-gray-600">
-            Tags, task name, and description are locked. Stage uses the same options as Add Remark
-            and can change Status/Progress. Only Remark is required
-            {enforceRequired && extraFieldDefs.some((field) => field.is_required)
+            Tags, task name, and description are locked.
+            {adminMode
+              ? ' The assignee stays as assigned. Choose Approve, Reject, or Resubmit for each row. That choice updates Status/Progress.'
+              : ' Stage uses the same options as Add Remark and can change Status/Progress.'}
+            {' '}Only Remark is required
+            {enforceRequired && visibleExtraFields.some((field) => field.is_required)
               ? ', plus any extra required fields assigned to you'
               : ''}
-            . Extra fields assigned in Access Management appear as additional columns and are included in Teams updates.
+            .
+            {visibleExtraFields.length > 0
+              ? ' Extra fields assigned in Access Management appear as additional columns and are included in Teams updates.'
+              : ''}
           </p>
 
+          {missingDecisionCount > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>
+                Choose Approve, Reject, or Resubmit for every row.
+                {' '}{missingDecisionCount} row{missingDecisionCount !== 1 ? 's' : ''} still need a decision.
+              </span>
+            </div>
+          )}
           {missingRemarkCount > 0 && (
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -321,7 +354,7 @@ export function BulkRemarkModal({
             <table className="min-w-full text-sm">
               <thead className="bg-gray-50 sticky top-0 z-10">
                 <tr>
-                  {['Tags', 'Task Name', 'Description', 'Stage', 'File Location', 'File Name'].map((header) => (
+                  {['Tags', 'Task Name', 'Description', adminMode ? 'Decision' : 'Stage', 'File Location', 'File Name'].map((header) => (
                     <th
                       key={header}
                       className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide whitespace-nowrap"
@@ -329,7 +362,7 @@ export function BulkRemarkModal({
                       {header}
                     </th>
                   ))}
-                  {extraFieldDefs.map((field) => (
+                  {visibleExtraFields.map((field) => (
                     <th
                       key={field.slug}
                       className="px-3 py-2 text-left text-xs font-semibold text-indigo-700 uppercase tracking-wide whitespace-nowrap"
@@ -346,10 +379,11 @@ export function BulkRemarkModal({
               <tbody>
                 {rows.map((row, rowIndex) => {
                   const missingRemark = !row.remark.trim();
+                  const missingDecision = adminMode && !['approve', 'reject', 'resubmit'].includes(row.stage);
                   return (
                     <tr
                       key={row.taskId}
-                      className={`border-t border-gray-100 ${row.error ? 'bg-red-50' : missingRemark ? 'bg-amber-50/40' : 'bg-white'}`}
+                      className={`border-t border-gray-100 ${row.error ? 'bg-red-50' : missingRemark || missingDecision ? 'bg-amber-50/40' : 'bg-white'}`}
                     >
                       <td className="px-3 py-2 align-top text-gray-600 min-w-[12rem] max-w-[16rem]">
                         {row.tags ? (
@@ -374,11 +408,14 @@ export function BulkRemarkModal({
                             value={row.stage}
                             onChange={(e) => updateRow(row.taskId, { stage: e.target.value, stageInvalid: false, error: null })}
                             onPaste={(e) => handlePaste(e, rowIndex, 'stage')}
-                            className={INPUT_CLASS}
+                            className={`${INPUT_CLASS} ${missingDecision ? 'border-amber-400' : ''}`}
                           >
+                            {adminMode && !row.stage && (
+                              <option value="">Select</option>
+                            )}
                             {([
                               ...stageCatalog,
-                              ...(stageCatalog.some((option) => option.value === row.stage)
+                              ...(stageCatalog.some((option) => option.value === row.stage) || (adminMode && !row.stage)
                                 ? []
                                 : [{ value: row.stage, label: row.stage }]),
                             ]).map((option) => (
@@ -412,7 +449,7 @@ export function BulkRemarkModal({
                           placeholder="File name"
                         />
                       </td>
-                      {extraFieldDefs.map((field) => {
+                      {visibleExtraFields.map((field) => {
                         const extraMissing = enforceRequired && field.is_required && !String(row.extra?.[field.slug] || '').trim();
                         return (
                           <td key={field.slug} className="px-3 py-2 align-top min-w-[9rem]">
