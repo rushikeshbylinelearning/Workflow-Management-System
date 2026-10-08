@@ -9,7 +9,14 @@ Two environments:
 | Database | New MySQL/MariaDB **on the VPS** | Existing A2 phpMyAdmin MySQL — never overwritten |
 | Process | PM2 on the VPS (same idea as live) | `pm2` process `workflow-backend` |
 
-GitHub Actions only reads workflow files from `.github/workflows/deploy.yml` (not a `deploy.yml` in the repo root).
+GitHub Actions only reads workflow files from `.github/workflows/` (not a workflow file in the repo root).
+
+| Workflow | When it runs | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | Pull requests, and pushes to `staging`, `main`, `production` | `npm ci` for frontend and backend, then `npm run build`. Fails the check if the app does not build. |
+| `.github/workflows/deploy.yml` | Push to `staging`, or Actions → Run workflow | Builds again with that environment's `API_URL`, rsyncs over SSH, restarts PM2, hits `/api/health`. |
+
+Require the **CI** check in branch protection before merging. Deploy does not replace that check: a push to `staging` still builds inside the deploy job, and a failed build never reaches the server.
 
 ---
 
