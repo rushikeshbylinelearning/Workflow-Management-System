@@ -350,35 +350,45 @@ function DateRangePicker({
 }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center w-full min-w-0">
-      <input
-        type="date"
-        value={startDate}
-        onChange={(e) => onStartChange(e.target.value)}
-        className={`
-          h-9 px-3 text-sm rounded-lg border outline-none w-full min-w-0
-          transition-all duration-150
-          ${active
-            ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-            : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
-          }
-        `}
-        placeholder="Start date"
-      />
-      <span className="text-gray-400 text-sm text-center px-1">to</span>
-      <input
-        type="date"
-        value={endDate}
-        onChange={(e) => onEndChange(e.target.value)}
-        className={`
-          h-9 px-3 text-sm rounded-lg border outline-none w-full min-w-0
-          transition-all duration-150
-          ${active
-            ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-            : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
-          }
-        `}
-        placeholder="End date"
-      />
+      <div className="relative">
+        <input
+          type="date"
+          value={startDate}
+          onChange={(e) => onStartChange(e.target.value)}
+          className={`
+            h-10 px-3 text-sm rounded-lg border outline-none w-full min-w-0
+            transition-all duration-150 font-medium
+            ${active
+              ? 'border-indigo-500 bg-white text-indigo-700 ring-2 ring-indigo-200 shadow-sm'
+              : 'border-gray-300 bg-white text-gray-700 hover:border-indigo-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200'
+            }
+          `}
+          placeholder="Start date"
+        />
+        {startDate && (
+          <span className="absolute left-2 -top-2 px-1 text-[10px] font-semibold text-indigo-600 bg-white">FROM</span>
+        )}
+      </div>
+      <span className="text-indigo-400 text-sm font-medium text-center px-1">→</span>
+      <div className="relative">
+        <input
+          type="date"
+          value={endDate}
+          onChange={(e) => onEndChange(e.target.value)}
+          className={`
+            h-10 px-3 text-sm rounded-lg border outline-none w-full min-w-0
+            transition-all duration-150 font-medium
+            ${active
+              ? 'border-indigo-500 bg-white text-indigo-700 ring-2 ring-indigo-200 shadow-sm'
+              : 'border-gray-300 bg-white text-gray-700 hover:border-indigo-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200'
+            }
+          `}
+          placeholder="End date"
+        />
+        {endDate && (
+          <span className="absolute left-2 -top-2 px-1 text-[10px] font-semibold text-indigo-600 bg-white">TO</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -732,16 +742,37 @@ export function TaskSearchFilters({
           />
         </div>
 
-        {/* Row 4: custom due date range */}
-        <div className="grid grid-cols-1 lg:grid-cols-[7.5rem_1fr] gap-2 lg:gap-3 items-center pt-2 border-t border-gray-50">
-          <span className="text-xs font-medium text-gray-500">Due between</span>
-          <DateRangePicker
-            startDate={filters.dateRangeStart ?? ''}
-            endDate={filters.dateRangeEnd ?? ''}
-            onStartChange={(date) => onFiltersChangeRef.current({ ...filtersRef.current, dateRangeStart: date })}
-            onEndChange={(date) => onFiltersChangeRef.current({ ...filtersRef.current, dateRangeEnd: date })}
-            active={!!filters.dateRangeStart || !!filters.dateRangeEnd}
-          />
+        {/* Row 4: custom due date range - Separated and prominent for bulk updates */}
+        <div className="pt-3 mt-1 border-t-2 border-gray-200">
+          <div className="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-lg p-3 border border-indigo-100">
+            <div className="grid grid-cols-1 lg:grid-cols-[9rem_1fr] gap-2 lg:gap-3 items-center">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">Date Range Filter</span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+                <DateRangePicker
+                  startDate={filters.dateRangeStart ?? ''}
+                  endDate={filters.dateRangeEnd ?? ''}
+                  onStartChange={(date) => onFiltersChangeRef.current({ ...filtersRef.current, dateRangeStart: date })}
+                  onEndChange={(date) => onFiltersChangeRef.current({ ...filtersRef.current, dateRangeEnd: date })}
+                  active={!!filters.dateRangeStart || !!filters.dateRangeEnd}
+                />
+                {(filters.dateRangeStart || filters.dateRangeEnd) && (
+                  <button
+                    onClick={() => onFiltersChangeRef.current({ ...filtersRef.current, dateRangeStart: '', dateRangeEnd: '' })}
+                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors shrink-0"
+                    title="Clear date range"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="text-xs text-indigo-600 mt-2 ml-0 lg:ml-[9.5rem]">
+              Filter tasks by due date range • Use with Bulk Update to modify date-filtered tasks
+            </p>
+          </div>
         </div>
       </div>
 

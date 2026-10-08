@@ -10,13 +10,18 @@ import {
   X,
   RefreshCw,
   Info,
-  Lock,
-  Unlock,
+  Plus,
+  Trash2,
+  MessageSquare,
+  Type,
+  Eye,
+  Pencil,
 } from 'lucide-react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { useToast } from './ui/Toast';
+import { remarkOptionsService, remarkFieldsService, type RemarkOption, type RemarkInputField } from '../services/apiService';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://workflow.bylinelms.com/api';
 
@@ -27,6 +32,13 @@ interface Permission {
   category: string;
 }
 
+const STATUS_EFFECT_LABELS: Record<RemarkOption['status_effect'], string> = {
+  none: 'No status change',
+  'in-progress': 'Mark In Progress',
+  'under-review': 'Submit for review',
+  skipped: 'Mark Skipped',
+};
+
 interface MemberWithPermissions {
   id: number;
   name: string;
@@ -35,6 +47,17 @@ interface MemberWithPermissions {
   is_active: boolean;
   skills: string[];
   permissions: Record<string, boolean>;
+  access_level?: 'read' | 'write';
+  all_teams_access?: boolean;
+  access_team_ids?: number[];
+  remark_option_ids?: number[];
+  uses_default_remark_options?: boolean;
+  remark_field_ids?: number[];
+}
+
+interface AccessTeam {
+  id: number;
+  name: string;
 }
 
 function getAuthHeaders() {
@@ -95,25 +118,51 @@ function PermissionToggle({
 function MemberPermissionRow({
   member,
   permissionDefs,
+  teams,
+  remarkOptions,
+  remarkFields,
   onRoleChange,
   onPermissionChange,
+  onAccessTeamsChange,
+  onToggleRemarkOption,
+  onResetRemarkOptions,
+  onToggleRemarkField,
 }: {
   member: MemberWithPermissions;
   permissionDefs: Permission[];
+  teams: AccessTeam[];
+  remarkOptions: RemarkOption[];
+  remarkFields: RemarkInputField[];
   onRoleChange: (memberId: number, role: 'employee' | 'project_manager') => void;
   onPermissionChange: (memberId: number, key: string, value: boolean) => void;
+  onAccessTeamsChange: (memberId: number, allTeams: boolean, teamIds: number[]) => void;
+  onToggleRemarkOption: (memberId: number, optionId: number, enabled: boolean) => void;
+  onResetRemarkOptions: (memberId: number) => void;
+  onToggleRemarkField: (memberId: number, fieldId: number, enabled: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const grantedCount = Object.values(member.permissions).filter(Boolean).length;
-  const totalCount = permissionDefs.length;
+  const featureDefs = permissionDefs.filter(
+    (perm) => perm.key !== 'write_access' && perm.key !== 'all_teams_access'
+  );
+  const grantedCount = featureDefs.filter((perm) => member.permissions[perm.key]).length;
+  const totalCount = featureDefs.length;
+  const writeAccess = member.permissions.write_access === true || member.access_level === 'write';
+  const allTeamsAccess = member.permissions.all_teams_access === true || member.all_teams_access === true;
+  const selectedTeamIds = member.access_team_ids || [];
 
-  // Group permissions by category
   const grouped: Record<string, Permission[]> = {};
-  permissionDefs.forEach(p => {
+  featureDefs.forEach(p => {
     if (!grouped[p.category]) grouped[p.category] = [];
     grouped[p.category].push(p);
   });
+
+  const systemIds = remarkOptions.filter(option => option.is_system).map(option => Number(option.id));
+  const enabledIds = new Set(
+    member.uses_default_remark_options || !member.remark_option_ids?.length
+      ? systemIds
+      : member.remark_option_ids
+  );
 
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
@@ -132,8 +181,7 @@ function MemberPermissionRow({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Role selector */}
+          <div className="flex items-center gap-3">
           <div onClick={e => e.stopPropagation()}>
             <select
               value={member.role}
@@ -147,9 +195,23 @@ function MemberPermissionRow({
             </select>
           </div>
 
-          {/* Permission count pill */}
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
+            writeAccess ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+          }`}>
+            {writeAccess ? <Pencil className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+            {writeAccess ? 'Read & write' : 'Read only'}
+          </span>
+
           <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full whitespace-nowrap">
-            {grantedCount}/{totalCount} access
+            {allTeamsAccess
+              ? 'All teams'
+              : selectedTeamIds.length > 0
+                ? `${selectedTeamIds.length} team${selectedTeamIds.length === 1 ? '' : 's'}`
+                : 'Own tasks'}
+          </span>
+
+          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full whitespace-nowrap">
+            {grantedCount}/{totalCount} features
           </span>
 
           {expanded ? (
@@ -166,9 +228,83 @@ function MemberPermissionRow({
           <div className="mb-3 flex items-center gap-2 text-xs text-gray-500">
             <Info className="w-3.5 h-3.5" />
             <span>
-              Changing the role above resets all toggles to role defaults. You can then fine-tune
-              individual permissions below.
+              Changing the role above resets feature toggles to role defaults. Choose read/write
+              and team scope below so All Tasks, updates, and reports match what this person should see.
             </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
+            <div className="bg-white rounded-lg border border-gray-200 p-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Access level</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  onClick={() => onPermissionChange(member.id, 'write_access', false)}
+                  className={`flex-1 text-left text-xs rounded-lg border px-3 py-2 ${
+                    !writeAccess ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-gray-200 text-gray-600'
+                  }`}
+                >
+                  <span className="font-semibold block">Read only</span>
+                  View tasks, updates, and reports. Cannot create, edit, or delete.
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPermissionChange(member.id, 'write_access', true)}
+                  className={`flex-1 text-left text-xs rounded-lg border px-3 py-2 ${
+                    writeAccess ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : 'border-gray-200 text-gray-600'
+                  }`}
+                >
+                  <span className="font-semibold block">Full read & write</span>
+                  Create, edit, assign, and update tasks in the granted team scope.
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg border border-gray-200 p-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+                <Users className="w-3.5 h-3.5" />
+                Team access
+              </p>
+              <label className="flex items-center gap-2 text-xs text-gray-700 mb-2">
+                <input
+                  type="checkbox"
+                  checked={allTeamsAccess}
+                  onChange={(e) => onAccessTeamsChange(member.id, e.target.checked, selectedTeamIds)}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                All teams (same task list as admin)
+              </label>
+              <div className={`grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-40 overflow-y-auto ${allTeamsAccess ? 'opacity-50 pointer-events-none' : ''}`}>
+                {teams.length === 0 ? (
+                  <p className="text-xs text-gray-400">No teams found.</p>
+                ) : (
+                  teams.map((team) => {
+                    const checked = selectedTeamIds.includes(Number(team.id));
+                    return (
+                      <label key={team.id} className="flex items-center gap-2 text-xs text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...new Set([...selectedTeamIds, Number(team.id)])]
+                              : selectedTeamIds.filter((id) => id !== Number(team.id));
+                            onAccessTeamsChange(member.id, false, next);
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="truncate">{team.name}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {!allTeamsAccess && selectedTeamIds.length === 0 && (
+                <p className="text-[11px] text-amber-700 mt-2">
+                  No teams selected — All Tasks will only show this user&apos;s own assignments.
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -197,6 +333,103 @@ function MemberPermissionRow({
               </div>
             ))}
           </div>
+
+          <div className="mt-4 bg-white rounded-lg border border-purple-200 p-3">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <p className="text-xs font-semibold text-purple-700 uppercase tracking-wider flex items-center gap-1">
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  Remark / Stage options
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Control which Stage choices this assignee sees in Add Remark and Bulk Add Remark.
+                  Extra options also appear in Teams updates.
+                </p>
+              </div>
+              {!member.uses_default_remark_options && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onResetRemarkOptions(member.id);
+                  }}
+                >
+                  Restore defaults
+                </Button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {remarkOptions.map((option) => {
+                const optionId = Number(option.id);
+                const enabled = enabledIds.has(optionId);
+                return (
+                  <button
+                    key={option.slug}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleRemarkOption(member.id, optionId, !enabled);
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      enabled
+                        ? 'bg-purple-50 border-purple-300 text-purple-800'
+                        : 'bg-gray-50 border-gray-200 text-gray-400'
+                    }`}
+                    title={STATUS_EFFECT_LABELS[option.status_effect]}
+                  >
+                    {enabled ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                    {option.label}
+                    {!option.is_system && (
+                      <span className="text-[10px] uppercase tracking-wide text-purple-500">extra</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {remarkFields.length > 0 && (
+            <div className="mt-4 bg-white rounded-lg border border-indigo-200 p-3">
+              <div className="mb-3">
+                <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wider flex items-center gap-1">
+                  <Type className="w-3.5 h-3.5" />
+                  Extra remark input fields
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Extra text fields this assignee sees in Add Remark and Bulk Add Remark, in addition to File Location, File Name, and Remark. Values also appear in Teams updates.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {remarkFields.map((field) => {
+                  const fieldId = Number(field.id);
+                  const enabled = (member.remark_field_ids || []).includes(fieldId);
+                  return (
+                    <button
+                      key={field.slug}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleRemarkField(member.id, fieldId, !enabled);
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                        enabled
+                          ? 'bg-indigo-50 border-indigo-300 text-indigo-800'
+                          : 'bg-gray-50 border-gray-200 text-gray-400'
+                      }`}
+                    >
+                      {enabled ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                      {field.label}
+                      {field.is_required && (
+                        <span className="text-[10px] uppercase tracking-wide text-indigo-500">required</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -208,17 +441,29 @@ export function AccessManagement() {
   const { showToast } = useToast();
   const [members, setMembers] = useState<MemberWithPermissions[]>([]);
   const [permissionDefs, setPermissionDefs] = useState<Permission[]>([]);
+  const [teams, setTeams] = useState<AccessTeam[]>([]);
+  const [remarkOptions, setRemarkOptions] = useState<RemarkOption[]>([]);
+  const [remarkFields, setRemarkFields] = useState<RemarkInputField[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'employee' | 'project_manager'>('all');
+  const [newOptionLabel, setNewOptionLabel] = useState('');
+  const [newOptionEffect, setNewOptionEffect] = useState<RemarkOption['status_effect']>('none');
+  const [savingOption, setSavingOption] = useState(false);
+  const [newFieldLabel, setNewFieldLabel] = useState('');
+  const [newFieldRequired, setNewFieldRequired] = useState(false);
+  const [savingField, setSavingField] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [defsRes, membersRes] = await Promise.all([
+      const [defsRes, membersRes, teamsRes, optionsRes, fieldsRes] = await Promise.all([
         fetch(`${API_URL}/access/permissions-definitions`, { headers: getAuthHeaders() }),
         fetch(`${API_URL}/access/members`, { headers: getAuthHeaders() }),
+        fetch(`${API_URL}/access/teams`, { headers: getAuthHeaders() }),
+        fetch(`${API_URL}/remark-options/all`, { headers: getAuthHeaders() }),
+        fetch(`${API_URL}/remark-options/fields/all`, { headers: getAuthHeaders() }),
       ]);
 
       if (defsRes.ok) {
@@ -228,6 +473,18 @@ export function AccessManagement() {
       if (membersRes.ok) {
         const m = await membersRes.json();
         setMembers(m.data || []);
+      }
+      if (teamsRes.ok) {
+        const t = await teamsRes.json();
+        setTeams(t.data || []);
+      }
+      if (optionsRes.ok) {
+        const o = await optionsRes.json();
+        setRemarkOptions(o.data || []);
+      }
+      if (fieldsRes.ok) {
+        const f = await fieldsRes.json();
+        setRemarkFields(f.data || []);
       }
     } catch (err) {
       showToast('Failed to load access management data', 'error');
@@ -317,6 +574,265 @@ export function AccessManagement() {
     }
   };
 
+  const handleAccessTeamsChange = async (memberId: number, allTeams: boolean, teamIds: number[]) => {
+    // Optimistic UI update
+    const previousState = members.find(m => m.id === memberId);
+    if (!previousState) return;
+
+    setMembers(prev =>
+      prev.map(m =>
+        m.id === memberId
+          ? { 
+              ...m, 
+              all_teams_access: allTeams,
+              permissions: { ...m.permissions, all_teams_access: allTeams },
+              access_team_ids: allTeams ? [] : teamIds 
+            }
+          : m
+      )
+    );
+
+    setSaving(memberId);
+    try {
+      const res = await fetch(`${API_URL}/access/members/${memberId}/permissions`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ 
+          permissions: { all_teams_access: allTeams },
+          access_team_ids: allTeams ? [] : teamIds 
+        }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        // Update with server response
+        setMembers(prev =>
+          prev.map(m =>
+            m.id === memberId
+              ? { 
+                  ...m, 
+                  all_teams_access: result.data.all_teams_access,
+                  permissions: { ...m.permissions, all_teams_access: result.data.all_teams_access },
+                  access_team_ids: result.data.access_team_ids || []
+                }
+              : m
+          )
+        );
+      } else {
+        // Revert on failure
+        setMembers(prev =>
+          prev.map(m =>
+            m.id === memberId
+              ? { 
+                  ...m, 
+                  all_teams_access: previousState.all_teams_access,
+                  permissions: previousState.permissions,
+                  access_team_ids: previousState.access_team_ids
+                }
+              : m
+          )
+        );
+        showToast(result.message || 'Failed to update team access', 'error');
+      }
+    } catch {
+      // Revert on failure
+      setMembers(prev =>
+        prev.map(m =>
+          m.id === memberId
+            ? { 
+                ...m, 
+                all_teams_access: previousState.all_teams_access,
+                permissions: previousState.permissions,
+                access_team_ids: previousState.access_team_ids
+              }
+            : m
+        )
+      );
+      showToast('Network error — team access not saved', 'error');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const currentEnabledIds = (member: MemberWithPermissions): number[] => {
+    const systemIds = remarkOptions.filter(option => option.is_system).map(option => Number(option.id));
+    if (member.uses_default_remark_options || !member.remark_option_ids?.length) {
+      return systemIds;
+    }
+    return member.remark_option_ids;
+  };
+
+  const handleToggleRemarkOption = async (memberId: number, optionId: number, enabled: boolean) => {
+    const member = members.find(m => m.id === memberId);
+    if (!member) return;
+    const current = currentEnabledIds(member);
+    const next = enabled
+      ? [...new Set([...current, optionId])]
+      : current.filter(id => id !== optionId);
+    if (next.length === 0) {
+      showToast('Keep at least one remark option for this assignee', 'error');
+      return;
+    }
+    const previous = {
+      remark_option_ids: member.remark_option_ids,
+      uses_default_remark_options: member.uses_default_remark_options,
+    };
+    setMembers(prev => prev.map(m => (
+      m.id === memberId
+        ? { ...m, remark_option_ids: next, uses_default_remark_options: false }
+        : m
+    )));
+    setSaving(memberId);
+    try {
+      const result = await remarkOptionsService.updateMemberOptions(memberId, next);
+      setMembers(prev => prev.map(m => (
+        m.id === memberId
+          ? { ...m, remark_option_ids: result.assignedIds, uses_default_remark_options: result.usesDefault }
+          : m
+      )));
+    } catch (err: any) {
+      setMembers(prev => prev.map(m => (
+        m.id === memberId ? { ...m, ...previous } : m
+      )));
+      showToast(err?.message || 'Failed to update remark options', 'error');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleResetRemarkOptions = async (memberId: number) => {
+    setSaving(memberId);
+    try {
+      const result = await remarkOptionsService.updateMemberOptions(memberId, [], true);
+      setMembers(prev => prev.map(m => (
+        m.id === memberId
+          ? { ...m, remark_option_ids: result.assignedIds, uses_default_remark_options: result.usesDefault }
+          : m
+      )));
+      showToast('Restored default remark options', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to restore defaults', 'error');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleAddRemarkOption = async () => {
+    const label = newOptionLabel.trim();
+    if (!label) {
+      showToast('Enter an option name', 'error');
+      return;
+    }
+    setSavingOption(true);
+    try {
+      const created = await remarkOptionsService.create({
+        label,
+        status_effect: newOptionEffect,
+      });
+      setRemarkOptions(prev => [...prev, created]);
+      setNewOptionLabel('');
+      setNewOptionEffect('none');
+      showToast(`Added "${created.label}". Enable it on specific assignees below.`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to add remark option', 'error');
+    } finally {
+      setSavingOption(false);
+    }
+  };
+
+  const handleDeleteRemarkOption = async (option: RemarkOption) => {
+    if (!option.id || option.is_system) return;
+    if (!window.confirm(`Remove "${option.label}" from all assignees?`)) return;
+    try {
+      await remarkOptionsService.remove(option.id);
+      setRemarkOptions(prev => prev.filter(item => item.id !== option.id));
+      setMembers(prev => prev.map(m => ({
+        ...m,
+        remark_option_ids: (m.remark_option_ids || []).filter(id => id !== option.id),
+      })));
+      showToast(`Removed "${option.label}"`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to remove remark option', 'error');
+    }
+  };
+
+  const handleToggleRemarkField = async (memberId: number, fieldId: number, enabled: boolean) => {
+    const member = members.find(m => m.id === memberId);
+    if (!member) return;
+    const current = member.remark_field_ids || [];
+    const next = enabled
+      ? [...new Set([...current, fieldId])]
+      : current.filter(id => id !== fieldId);
+    const previous = member.remark_field_ids;
+    setMembers(prev => prev.map(m => (
+      m.id === memberId ? { ...m, remark_field_ids: next } : m
+    )));
+    setSaving(memberId);
+    try {
+      const result = await remarkFieldsService.updateMemberFields(memberId, next);
+      setMembers(prev => prev.map(m => (
+        m.id === memberId ? { ...m, remark_field_ids: result.assignedIds } : m
+      )));
+    } catch (err: any) {
+      setMembers(prev => prev.map(m => (
+        m.id === memberId ? { ...m, remark_field_ids: previous } : m
+      )));
+      showToast(err?.message || 'Failed to update extra remark fields', 'error');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleAddRemarkField = async () => {
+    const label = newFieldLabel.trim();
+    if (!label) {
+      showToast('Enter a field name', 'error');
+      return;
+    }
+    setSavingField(true);
+    try {
+      const created = await remarkFieldsService.create({
+        label,
+        is_required: newFieldRequired,
+      });
+      setRemarkFields(prev => [...prev, created]);
+      setNewFieldLabel('');
+      setNewFieldRequired(false);
+      showToast(`Added "${created.label}". Enable it on specific assignees below.`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to add extra remark field', 'error');
+    } finally {
+      setSavingField(false);
+    }
+  };
+
+  const handleDeleteRemarkField = async (field: RemarkInputField) => {
+    if (!field.id) return;
+    if (!window.confirm(`Remove "${field.label}" from all assignees?`)) return;
+    try {
+      await remarkFieldsService.remove(field.id);
+      setRemarkFields(prev => prev.filter(item => item.id !== field.id));
+      setMembers(prev => prev.map(m => ({
+        ...m,
+        remark_field_ids: (m.remark_field_ids || []).filter(id => id !== field.id),
+      })));
+      showToast(`Removed "${field.label}"`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to remove extra remark field', 'error');
+    }
+  };
+
+  const handleToggleFieldRequired = async (field: RemarkInputField) => {
+    if (!field.id) return;
+    try {
+      const updated = await remarkFieldsService.update(field.id, {
+        is_required: !field.is_required,
+      });
+      setRemarkFields(prev => prev.map(item => item.id === field.id ? updated : item));
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update field', 'error');
+    }
+  };
+
   // Filtered list
   const filtered = members.filter(m => {
     const matchesSearch =
@@ -338,7 +854,7 @@ export function AccessManagement() {
         <div className="relative z-10 flex items-center justify-between gap-6">
           <div>
             <h1 className="text-2xl font-bold">Access Management</h1>
-            <p className="text-white/80">Manage roles and permissions for team members</p>
+            <p className="text-white/80">Manage roles, permissions, remark options, and extra remark fields for team members</p>
           </div>
         </div>
       </div>
@@ -410,6 +926,148 @@ export function AccessManagement() {
         </div>
       </div>
 
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-purple-600" />
+              Remark / Stage options
+            </h3>
+            <p className="text-xs text-gray-500 mt-1">
+              These choices appear in Add Remark, Bulk Add Remark, and Teams updates.
+              Built-in options stay available unless you remove them for a specific assignee below.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {remarkOptions.map((option) => (
+              <div
+                key={option.slug}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${
+                  option.is_system
+                    ? 'bg-gray-50 border-gray-200 text-gray-700'
+                    : 'bg-purple-50 border-purple-200 text-purple-800'
+                }`}
+              >
+                <span className="font-medium">{option.label}</span>
+                <span className="text-gray-400">{STATUS_EFFECT_LABELS[option.status_effect]}</span>
+                {!option.is_system && option.id && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRemarkOption(option)}
+                    className="text-purple-500 hover:text-red-600"
+                    title="Remove extra option"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={newOptionLabel}
+              onChange={(e) => setNewOptionLabel(e.target.value)}
+              placeholder="Add extra option, e.g. Sent to Client"
+              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            />
+            <select
+              value={newOptionEffect}
+              onChange={(e) => setNewOptionEffect(e.target.value as RemarkOption['status_effect'])}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="none">No status change</option>
+              <option value="in-progress">Mark In Progress</option>
+              <option value="under-review">Submit for review</option>
+              <option value="skipped">Mark Skipped</option>
+            </select>
+            <Button
+              type="button"
+              onClick={handleAddRemarkOption}
+              loading={savingOption}
+              disabled={!newOptionLabel.trim()}
+              className="bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              <Plus className="w-4 h-4 mr-1" />
+              Add option
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+              <Type className="w-4 h-4 text-indigo-600" />
+              Extra remark input fields
+            </h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Add extra text fields such as Ticket Number or Client Name. Enable them on specific employees below so they appear in Add Remark, Bulk Add Remark, and Teams updates.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {remarkFields.length === 0 && (
+              <p className="text-xs text-gray-400">No extra fields yet. Add one below, then enable it for the assignee who needs it.</p>
+            )}
+            {remarkFields.map((field) => (
+              <div
+                key={field.slug}
+                className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs bg-indigo-50 border-indigo-200 text-indigo-800"
+              >
+                <span className="font-medium">{field.label}</span>
+                <button
+                  type="button"
+                  onClick={() => handleToggleFieldRequired(field)}
+                  className={`text-[10px] uppercase tracking-wide ${field.is_required ? 'text-red-600' : 'text-gray-400'}`}
+                  title={field.is_required ? 'Required for assigned employees' : 'Optional — click to require'}
+                >
+                  {field.is_required ? 'required' : 'optional'}
+                </button>
+                {field.id && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRemarkField(field)}
+                    className="text-indigo-500 hover:text-red-600"
+                    title="Remove extra field"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={newFieldLabel}
+              onChange={(e) => setNewFieldLabel(e.target.value)}
+              placeholder="Add extra field, e.g. Ticket Number"
+              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            />
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600 px-2">
+              <input
+                type="checkbox"
+                checked={newFieldRequired}
+                onChange={(e) => setNewFieldRequired(e.target.checked)}
+                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              Required
+            </label>
+            <Button
+              type="button"
+              onClick={handleAddRemarkField}
+              loading={savingField}
+              disabled={!newFieldLabel.trim()}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            >
+              <Plus className="w-4 h-4 mr-1" />
+              Add field
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div className="flex gap-2 flex-wrap">
@@ -471,8 +1129,15 @@ export function AccessManagement() {
               <MemberPermissionRow
                 member={member}
                 permissionDefs={permissionDefs}
+                teams={teams}
+                remarkOptions={remarkOptions}
+                remarkFields={remarkFields}
                 onRoleChange={handleRoleChange}
                 onPermissionChange={handlePermissionChange}
+                onAccessTeamsChange={handleAccessTeamsChange}
+                onToggleRemarkOption={handleToggleRemarkOption}
+                onResetRemarkOptions={handleResetRemarkOptions}
+                onToggleRemarkField={handleToggleRemarkField}
               />
             </div>
           ))}

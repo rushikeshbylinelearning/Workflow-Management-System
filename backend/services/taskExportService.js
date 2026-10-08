@@ -127,6 +127,25 @@ function buildWhereClauseWithoutAssignee(filters, user) {
     conditions.push(`t.id IN (${placeholders})`);
     params.push(...filters.selectedIds);
   }
+  
+  // Educational hierarchy (tag) filters
+  if (filters.grade_id) {
+    conditions.push('t.grade_id = ?');
+    params.push(parseInt(filters.grade_id, 10));
+  }
+  if (filters.book_id) {
+    conditions.push('t.book_id = ?');
+    params.push(parseInt(filters.book_id, 10));
+  }
+  if (filters.unit_id) {
+    conditions.push('t.unit_id = ?');
+    params.push(parseInt(filters.unit_id, 10));
+  }
+  if (filters.lesson_id) {
+    conditions.push('t.lesson_id = ?');
+    params.push(parseInt(filters.lesson_id, 10));
+  }
+  
   appendTeamFilter(conditions, params, filters.team_id);
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -198,6 +217,25 @@ function buildWhereClauseWithAssignee(filters, user) {
     conditions.push('ta.assignee_id = ? AND ta.assignee_type = "team"');
     params.push(user.id);
   }
+  
+  // Educational hierarchy (tag) filters
+  if (filters.grade_id) {
+    conditions.push('t.grade_id = ?');
+    params.push(parseInt(filters.grade_id, 10));
+  }
+  if (filters.book_id) {
+    conditions.push('t.book_id = ?');
+    params.push(parseInt(filters.book_id, 10));
+  }
+  if (filters.unit_id) {
+    conditions.push('t.unit_id = ?');
+    params.push(parseInt(filters.unit_id, 10));
+  }
+  if (filters.lesson_id) {
+    conditions.push('t.lesson_id = ?');
+    params.push(parseInt(filters.lesson_id, 10));
+  }
+  
   appendTeamFilter(conditions, params, filters.team_id);
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

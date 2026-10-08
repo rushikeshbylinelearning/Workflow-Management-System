@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, CheckCircle2, CheckSquare, Circle, MessageSquare, PauseCircle, PlayCircle, Trash2, UserCheck } from 'lucide-react';
+import { CalendarDays, CheckCircle2, CheckSquare, Circle, MessageSquare, PauseCircle, PlayCircle, Trash2, UserCheck, Edit3 } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { useToast } from './ui/Toast';
 import { taskService } from '../services/apiService';
 import { getTaskStatusLabel } from '../utils/taskStatusDisplay';
 import { BulkRemarkModal } from './BulkRemarkModal';
+import { BulkEditNamesModal } from './BulkEditNamesModal';
 import { getBulkSelectionLimit } from '../utils/bulkRemark';
 
 type BulkStatus = 'on-hold' | 'in-progress' | 'not-started' | 'completed';
@@ -82,6 +83,7 @@ export function BulkTaskSelectionActions({
   const [isReassignOpen, setIsReassignOpen] = useState(false);
   const [isDatesOpen, setIsDatesOpen] = useState(false);
   const [isRemarkOpen, setIsRemarkOpen] = useState(false);
+  const [isEditNamesOpen, setIsEditNamesOpen] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [assigneeSearch, setAssigneeSearch] = useState('');
@@ -283,6 +285,16 @@ export function BulkTaskSelectionActions({
               variant="outline"
               size="xs"
               disabled={busy}
+              onClick={() => setIsEditNamesOpen(true)}
+              className={`${COMPACT_BTN} border-amber-300 text-amber-700 hover:bg-amber-50`}
+            >
+              <Edit3 className="w-3.5 h-3.5 mr-1" />
+              Edit Names
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
               onClick={() => setIsReassignOpen(true)}
               className={`${COMPACT_BTN} border-indigo-300 text-indigo-700 hover:bg-indigo-50`}
             >
@@ -315,7 +327,7 @@ export function BulkTaskSelectionActions({
           className={`${COMPACT_BTN} border-purple-300 text-purple-700 hover:bg-purple-50`}
         >
           <MessageSquare className="w-3.5 h-3.5 mr-1" />
-          Add Remark
+          {assigneeMode ? 'Add Remark' : 'Bulk Add Remark'}
         </Button>
         {!assigneeMode && onDelete && (
           <Button
@@ -570,6 +582,20 @@ export function BulkTaskSelectionActions({
           setIsRemarkOpen(false);
           showToast(
             `${updatedCount} task${updatedCount !== 1 ? 's' : ''} updated`,
+            'success'
+          );
+          await onSuccess();
+        }}
+      />
+
+      <BulkEditNamesModal
+        isOpen={isEditNamesOpen}
+        selectedTasks={selectedTasks}
+        onClose={() => setIsEditNamesOpen(false)}
+        onSuccess={async (updatedCount) => {
+          setIsEditNamesOpen(false);
+          showToast(
+            `${updatedCount} task name${updatedCount !== 1 ? 's' : ''} updated successfully`,
             'success'
           );
           await onSuccess();

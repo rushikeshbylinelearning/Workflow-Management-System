@@ -1,4 +1,5 @@
 const remarkOptions = require('../services/remarkOptionsService');
+const remarkFields = require('../services/remarkFieldsService');
 
 function sendError(res, error, fallbackMessage) {
   if (error.statusCode) {
@@ -100,6 +101,93 @@ const updateMemberRemarkOptions = async (req, res) => {
   }
 };
 
+const listRemarkFields = async (req, res) => {
+  try {
+    const data = await remarkFields.getFieldsForUser(req.user);
+    res.json({
+      success: true,
+      data,
+      enforceRequired: remarkFields.shouldEnforceRequired(req.user),
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to load remark fields');
+  }
+};
+
+const listAllRemarkFields = async (req, res) => {
+  try {
+    const data = await remarkFields.listAllFields();
+    res.json({ success: true, data });
+  } catch (error) {
+    sendError(res, error, 'Failed to load remark fields');
+  }
+};
+
+const createRemarkField = async (req, res) => {
+  try {
+    const data = await remarkFields.createField({
+      label: req.body?.label,
+      is_required: req.body?.is_required === true || req.body?.isRequired === true,
+    });
+    res.status(201).json({ success: true, data, message: 'Remark field added' });
+  } catch (error) {
+    sendError(res, error, 'Failed to add remark field');
+  }
+};
+
+const updateRemarkField = async (req, res) => {
+  try {
+    const data = await remarkFields.updateField(req.params.id, {
+      label: req.body?.label,
+      is_required: req.body?.is_required ?? req.body?.isRequired,
+    });
+    res.json({ success: true, data, message: 'Remark field updated' });
+  } catch (error) {
+    sendError(res, error, 'Failed to update remark field');
+  }
+};
+
+const deleteRemarkField = async (req, res) => {
+  try {
+    await remarkFields.deleteField(req.params.id);
+    res.json({ success: true, message: 'Remark field removed' });
+  } catch (error) {
+    sendError(res, error, 'Failed to remove remark field');
+  }
+};
+
+const getMemberRemarkFields = async (req, res) => {
+  try {
+    const assignedIds = await remarkFields.getAssignedFieldIds(req.params.id);
+    const data = await remarkFields.getFieldsForMember(req.params.id);
+    res.json({
+      success: true,
+      data,
+      assignedIds,
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to load member remark fields');
+  }
+};
+
+const updateMemberRemarkFields = async (req, res) => {
+  try {
+    const fieldIds = req.body?.fieldIds ?? req.body?.field_ids ?? [];
+    const data = await remarkFields.setMemberFields(req.params.id, fieldIds);
+    const assignedIds = await remarkFields.getAssignedFieldIds(req.params.id);
+    res.json({
+      success: true,
+      data,
+      assignedIds,
+      message: assignedIds.length === 0
+        ? 'Removed extra remark fields for this assignee'
+        : 'Extra remark fields updated for this assignee',
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to update member remark fields');
+  }
+};
+
 module.exports = {
   listRemarkOptions,
   listAllRemarkOptions,
@@ -108,4 +196,11 @@ module.exports = {
   deleteRemarkOption,
   getMemberRemarkOptions,
   updateMemberRemarkOptions,
+  listRemarkFields,
+  listAllRemarkFields,
+  createRemarkField,
+  updateRemarkField,
+  deleteRemarkField,
+  getMemberRemarkFields,
+  updateMemberRemarkFields,
 };

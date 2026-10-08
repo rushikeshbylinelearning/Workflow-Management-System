@@ -1,6 +1,7 @@
 const db = require('../db');
 const { postToTeams } = require('./teamsNotifier');
 const { stripHtml } = require('./sanitizeRemark');
+const remarkFields = require('../services/remarkFieldsService');
 
 /** Only employee assignees may trigger Teams — never admin or project managers. */
 function isAssigneeTeamsActor(user) {
@@ -126,24 +127,44 @@ async function notifyAssigneeTeams(user, taskId, payload) {
   }
 }
 
-const BULK_REMARK_STAGE_LABELS = {
-  general: 'General / In Progress',
-  complete: 'Completed',
-  skipped: 'Skipped',
-  other: 'Other',
-};
-
 function clipTeamsCell(value, max = 160) {
   const text = stripHtml(String(value || '')).replace(/\|/g, '/');
   if (!text) return '—';
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function collectBulkExtraFieldColumns(rows) {
+  const seen = new Map();
+  for (const row of rows || []) {
+    const items = remarkFields.extraFieldsToList(row.extraFields);
+    for (const item of items) {
+      if (!seen.has(item.slug)) seen.set(item.slug, item.label);
+    }
+  }
+  return [...seen.entries()].map(([slug, label]) => ({ slug, label }));
+}
+
+function extraFieldValueForSlug(raw, slug) {
+  const items = remarkFields.extraFieldsToList(raw);
+  return items.find((item) => item.slug === slug)?.value || '';
+}
+
 function formatBulkRemarkTeamsMessage(rows) {
+  const extraColumns = collectBulkExtraFieldColumns(rows);
+  const headers = [
+    'Tags',
+    'Task Name',
+    'Description',
+    'Stage',
+    'File Location',
+    'File Name',
+    ...extraColumns.map((column) => column.label),
+    'Remark',
+  ];
   const lines = [
     `Bulk remark update — ${rows.length} task${rows.length === 1 ? '' : 's'}`,
     '',
-    'Tags | Task Name | Description | Stage | File Location | File Name | Remark',
+    headers.join(' | '),
   ];
   rows.forEach((row, index) => {
     lines.push(
@@ -154,6 +175,7 @@ function formatBulkRemarkTeamsMessage(rows) {
         clipTeamsCell(row.stageLabel, 40),
         clipTeamsCell(row.fileLocation, 80),
         clipTeamsCell(row.fileName, 80),
+        ...extraColumns.map((column) => clipTeamsCell(extraFieldValueForSlug(row.extraFields, column.slug), 80)),
         clipTeamsCell(row.remark, 160),
       ].join(' | ')}`
     );
@@ -161,70 +183,139 @@ function formatBulkRemarkTeamsMessage(rows) {
   return lines.join('\n');
 }
 
+async function buildBulkRemarkTableRows(updates) {
+  const remarkOptions = require('../services/remarkOptionsService');
+  const allOptions = await remarkOptions.listAllOptions();
+  const ids = updates.map((row) => Number(row.taskId)).filter((id) => id > 0);
+  if (ids.length === 0) return [];
+
+  const placeholders = ids.map(() => '?').join(',');
+  const tasks = await db.query(
+    `SELECT t.id, t.name, t.description, t.component_path, p.name AS project_name,
+            g.name AS grade_name, b.name AS book_name, u.name AS unit_name, l.name AS lesson_name
+     FROM tasks t
+     LEFT JOIN projects p ON t.project_id = p.id
+     LEFT JOIN grades g ON t.grade_id = g.id
+     LEFT JOIN books b ON t.book_id = b.id
+     LEFT JOIN units u ON t.unit_id = u.id
+     LEFT JOIN lessons l ON t.lesson_id = l.id
+     WHERE t.id IN (${placeholders})`,
+    ids
+  );
+  const byId = {};
+  for (const task of tasks) {
+    byId[Number(task.id)] = task;
+  }
+
+  return updates.map((row) => {
+    const task = byId[Number(row.taskId)] || {};
+    const tags = task.component_path
+      || [task.grade_name, task.book_name, task.unit_name, task.lesson_name].filter(Boolean).join(' > ');
+    return {
+      taskId: Number(row.taskId),
+      tags: tags || '—',
+      name: task.name || '—',
+      description: task.description || '—',
+      stage: row.stage,
+      stageLabel: row.stageLabel || remarkOptions.labelForSlug(row.stage, allOptions) || row.stage || '—',
+      fileLocation: row.fileLocation || '—',
+      fileName: row.fileName || '—',
+      remark: stripHtml(row.remark) || '—',
+      extraFields: row.extraFields || {},
+      project: task.project_name || 'N/A',
+    };
+  });
+}
+
+function bulkRemarkPayload(tableRows, extra = {}) {
+  const table = formatBulkRemarkTeamsMessage(tableRows);
+  const projects = [...new Set(tableRows.map((row) => row.project).filter((name) => name && name !== 'N/A'))];
+  return {
+    project: projects.length === 1 ? projects[0] : (projects.join(', ') || 'N/A'),
+    taskDetails: `Bulk remark update (${tableRows.length} tasks)`,
+    taskDescription: `${tableRows.length} tasks updated in one bulk remark`,
+    task_description: `${tableRows.length} tasks updated in one bulk remark`,
+    serverLink: tableRows.length === 1 ? tableRows[0].fileLocation : 'See bulk table',
+    fileName: tableRows.length === 1 ? tableRows[0].fileName : 'See bulk table',
+    remark: table,
+    status: 'Bulk update',
+    type: 'remark',
+    isBulk: true,
+    bulkCount: tableRows.length,
+    tasks: tableRows,
+    extraFields: tableRows.flatMap((row) => remarkFields.extraFieldsToList(row.extraFields)),
+    ...extra,
+  };
+}
+
+async function notifyBulkRemarksToAssigneeTeams(actor, tableRows) {
+  const { postToTeams } = require('./teamsNotifier');
+  const ids = tableRows.map((row) => row.taskId).filter((id) => id > 0);
+  if (ids.length === 0) return;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const assignees = await db.query(
+    `SELECT ta.task_id, ta.assignee_id
+     FROM task_assignees ta
+     INNER JOIN team_members tm ON tm.id = ta.assignee_id AND tm.is_active = 1
+     WHERE ta.assignee_type = 'team'
+       AND ta.task_id IN (${placeholders})
+       AND (tm.role IS NULL OR tm.role != 'project_manager')`,
+    ids
+  );
+
+  const destinations = new Map();
+  for (const row of assignees) {
+    const teamRow = await resolveTeamForNotify(row.assignee_id, row.task_id);
+    const webhookUrl = teamRow?.teamsWebhookUrl || process.env.TEAMS_WEBHOOK_URL;
+    if (!teamRow?.teamName || !webhookUrl) continue;
+    const key = `${teamRow.teamName}::${webhookUrl}`;
+    if (!destinations.has(key)) {
+      destinations.set(key, {
+        teamName: teamRow.teamName,
+        webhookUrl,
+        taskIds: new Set(),
+      });
+    }
+    destinations.get(key).taskIds.add(Number(row.task_id));
+  }
+
+  for (const dest of destinations.values()) {
+    const destRows = tableRows.filter((row) => dest.taskIds.has(row.taskId));
+    if (destRows.length === 0) continue;
+    const payload = bulkRemarkPayload(destRows, {
+      name: actor?.name || 'Admin',
+      teamName: dest.teamName,
+      date: new Date().toLocaleDateString('en-GB'),
+      taskId: destRows[0].taskId,
+      task_id: destRows[0].taskId,
+    });
+    postToTeams(dest.webhookUrl, payload).catch((err) => {
+      console.error('[Teams] Admin bulk remark post failed (non-blocking):', err?.message || err);
+    });
+  }
+}
+
 /**
  * One Teams chat post for a bulk remark submit, instead of one message per task.
- * Reuses the existing Power Automate payload keys so the flow still posts.
+ * Assignees post to their own team. Admin/PM bulk remarks post to each
+ * affected assignee team's chat, including custom stage option labels.
  */
 async function notifyBulkAssigneeRemarks(user, updates) {
-  if (!isAssigneeTeamsActor(user) || !Array.isArray(updates) || updates.length === 0) return;
+  if (!Array.isArray(updates) || updates.length === 0) return;
 
   try {
-    const ids = updates.map((row) => Number(row.taskId)).filter((id) => id > 0);
-    if (ids.length === 0) return;
+    const tableRows = await buildBulkRemarkTableRows(updates);
+    if (tableRows.length === 0) return;
 
-    const placeholders = ids.map(() => '?').join(',');
-    const tasks = await db.query(
-      `SELECT t.id, t.name, t.description, t.component_path, p.name AS project_name,
-              g.name AS grade_name, b.name AS book_name, u.name AS unit_name, l.name AS lesson_name
-       FROM tasks t
-       LEFT JOIN projects p ON t.project_id = p.id
-       LEFT JOIN grades g ON t.grade_id = g.id
-       LEFT JOIN books b ON t.book_id = b.id
-       LEFT JOIN units u ON t.unit_id = u.id
-       LEFT JOIN lessons l ON t.lesson_id = l.id
-       WHERE t.id IN (${placeholders})`,
-      ids
-    );
-    const byId = {};
-    for (const task of tasks) {
-      byId[Number(task.id)] = task;
+    if (isAssigneeTeamsActor(user)) {
+      await notifyAssigneeTeams(user, tableRows[0].taskId, bulkRemarkPayload(tableRows));
+      return;
     }
 
-    const tableRows = updates.map((row) => {
-      const task = byId[Number(row.taskId)] || {};
-      const tags = task.component_path
-        || [task.grade_name, task.book_name, task.unit_name, task.lesson_name].filter(Boolean).join(' > ');
-      return {
-        taskId: Number(row.taskId),
-        tags: tags || '—',
-        name: task.name || '—',
-        description: task.description || '—',
-        stage: row.stage,
-        stageLabel: BULK_REMARK_STAGE_LABELS[row.stage] || row.stage || '—',
-        fileLocation: row.fileLocation || '—',
-        fileName: row.fileName || '—',
-        remark: stripHtml(row.remark) || '—',
-        project: task.project_name || 'N/A',
-      };
-    });
-
-    const table = formatBulkRemarkTeamsMessage(tableRows);
-    const projects = [...new Set(tableRows.map((row) => row.project).filter((name) => name && name !== 'N/A'))];
-
-    await notifyAssigneeTeams(user, ids[0], {
-      project: projects.length === 1 ? projects[0] : (projects.join(', ') || 'N/A'),
-      taskDetails: `Bulk remark update (${tableRows.length} tasks)`,
-      taskDescription: `${tableRows.length} tasks updated in one bulk remark`,
-      task_description: `${tableRows.length} tasks updated in one bulk remark`,
-      serverLink: tableRows.length === 1 ? tableRows[0].fileLocation : 'See bulk table',
-      fileName: tableRows.length === 1 ? tableRows[0].fileName : 'See bulk table',
-      remark: table,
-      status: 'Bulk update',
-      type: 'remark',
-      isBulk: true,
-      bulkCount: tableRows.length,
-      tasks: tableRows,
-    });
+    if (user?.type === 'admin' || user?.role === 'project_manager') {
+      await notifyBulkRemarksToAssigneeTeams(user, tableRows);
+    }
   } catch (err) {
     console.error('[Teams] Bulk remark notification failed (non-blocking):', err.message);
   }

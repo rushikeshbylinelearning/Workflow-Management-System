@@ -1,6 +1,7 @@
 const db = require('../db');
 const { ensureTeamMembersOnProject } = require('../utils/projectMembership');
 const { emitProjectTaskUpdate } = require('../utils/emitProjectTaskUpdate');
+const { getAccessibleTeamMemberIds } = require('../utils/accessPermissions');
 
 // Get all allocations with filters
 const getAllocations = async (req, res) => {
@@ -37,6 +38,12 @@ const getAllocations = async (req, res) => {
     `;
     
     const queryParams = [];
+
+    const memberIds = await getAccessibleTeamMemberIds(req.user);
+    if (memberIds) {
+      query += ` AND ((ta.user_type = 'team' AND ta.user_id IN (${memberIds.map(() => '?').join(',')})) OR ta.user_type = 'admin')`;
+      queryParams.push(...memberIds);
+    }
 
     if (user_id) {
       query += ' AND ta.user_id = ?';

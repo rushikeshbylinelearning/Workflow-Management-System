@@ -15,6 +15,10 @@ interface TaskExportButtonProps {
     search?: string;
     dateRangeStart?: string;
     dateRangeEnd?: string;
+    gradeId?: string;
+    bookId?: string;
+    unitId?: string;
+    lessonId?: string;
   };
   /** IDs of currently selected tasks (for "Export Selected") */
   selectedTaskIds?: string[];
@@ -177,6 +181,12 @@ export function TaskExportButton({
     // Add date range filters
     if (filters.dateRangeStart) params.set('dateRangeStart', filters.dateRangeStart);
     if (filters.dateRangeEnd) params.set('dateRangeEnd', filters.dateRangeEnd);
+    
+    // Add educational hierarchy (tag) filters
+    if (filters.gradeId) params.set('grade_id', filters.gradeId);
+    if (filters.bookId) params.set('book_id', filters.bookId);
+    if (filters.unitId) params.set('unit_id', filters.unitId);
+    if (filters.lessonId) params.set('lesson_id', filters.lessonId);
     
     return params;
   };

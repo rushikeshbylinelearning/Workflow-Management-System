@@ -43,7 +43,7 @@ import { BulkTagTasksModal } from './BulkTagTasksModal';
 import { HierarchyTagSearch } from './HierarchyTagSearch';
 import { buildProjectHierarchyTags, taskMatchesHierarchyFilter } from '../utils/educationalHierarchy';
 import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
-import { formatTaskTags, getBulkSelectionLimit } from '../utils/bulkRemark';
+import { formatTaskTags } from '../utils/bulkRemark';
 import { useToast } from './ui/Toast';
 import { TaskExportButton } from './TaskExportButton';
 import { FlagEmployeeModal } from './modals/FlagEmployeeModal';
@@ -195,11 +195,11 @@ export function TaskManager() {
   const { state, dispatch } = useApp();
   const { user } = useAuth();
   const { showToast } = useToast();
-  const { isProjectManager, accessInfo } = usePermissions();
+  const { accessInfo, canViewOrgTasks, canManageTasks: canManageGrantedTasks } = usePermissions();
   const isAdminUser = !!user;
-  const canManageTasks = isAdminUser || isProjectManager;
+  const canViewOrgTasksUi = isAdminUser || canViewOrgTasks;
+  const canManageTasks = isAdminUser || canManageGrantedTasks;
   const canSelectTasks = true;
-  const bulkSelectionLimit = getBulkSelectionLimit(canManageTasks);
 
   const statsCacheKey = useMemo(() => {
     if (user?.id) return buildTaskStatsCacheKey({ adminUserId: user.id });
@@ -226,14 +226,14 @@ export function TaskManager() {
 
   // Employees / assignees only see their own tasks — strip admin-only filters from persisted state
   useEffect(() => {
-    if (!isAdminUser) {
+    if (!canViewOrgTasksUi) {
       setFilters((prev) => {
         const needsUpdate = (prev.assignees?.length ?? 0) > 0 || (prev.team ?? 'all') !== 'all';
         if (!needsUpdate) return prev;
         return sanitizeAssigneeFilters(prev);
       });
     }
-  }, [isAdminUser]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canViewOrgTasksUi]); // eslint-disable-line react-hooks/exhaustive-deps
   
   // Check if user is logged in (either admin or team member)
   const isAuthenticated = () => {
@@ -348,8 +348,13 @@ export function TaskManager() {
   const [kanbanLoading, setKanbanLoading] = useState(false);
   const kanbanFetchGenRef = useRef(0);
   
-  // Task selection state for bulk operations
+  // Task selection state for bulk operations.
+  // taskByIdCache keeps tasks selected on other pages after the list refetches.
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
+  const [taskByIdCache, setTaskByIdCache] = useState<Map<string, any>>(() => new Map());
+  const [knownMatchCount, setKnownMatchCount] = useState<number | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const selectAllGenRef = useRef(0);
   const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
   const [isBulkUploadModalOpen, setIsBulkUploadModalOpen] = useState(false);
   const [isBulkUpdateModalOpen, setIsBulkUpdateModalOpen] = useState(false);
@@ -440,12 +445,12 @@ export function TaskManager() {
     const fetchReferenceData = async () => {
       try {
         const emptyList: Promise<any> = Promise.resolve([]);
-        const projectsPromise = canManageTasks
+        const projectsPromise = canViewOrgTasksUi
           ? projectService.getAll()
           : teamProjectService.getAll().then((data) => ({ data }));
         const [teamMembersData, teamsData, stagesData, projectsResponse, skillsData, gradesData, booksData, unitsData, lessonsData] = await Promise.all([
-          canManageTasks ? teamService.getMembers() : emptyList,
-          canManageTasks ? teamService.getTeams() : emptyList,
+          canViewOrgTasksUi ? teamService.getMembers() : emptyList,
+          canViewOrgTasksUi ? teamService.getTeams() : emptyList,
           stageService.getAll(),
           projectsPromise,
           skillService.getAll(),
@@ -491,11 +496,11 @@ export function TaskManager() {
       }
     };
     fetchReferenceData();
-  }, [user, canManageTasks, statsCacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user, canViewOrgTasksUi, statsCacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset project filter if the selected project is not in the assignee's allowed list
   useEffect(() => {
-    if (canManageTasks || filters.project === 'all') return;
+    if (canViewOrgTasksUi || filters.project === 'all') return;
     const allowed = projects.some((p) => String(p.id) === String(filters.project));
     if (!allowed) {
       setFilters((prev) => ({
@@ -508,7 +513,7 @@ export function TaskManager() {
         lessonId: '',
       }));
     }
-  }, [canManageTasks, projects, filters.project]);
+  }, [canViewOrgTasksUi, projects, filters.project]);
 
   // Fetch tasks whenever filters, sort, pagination, or debounced search changes.
   useEffect(() => {
@@ -747,10 +752,15 @@ export function TaskManager() {
       setCurrentPage(1);
     }
   }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Clear selections when filters change
+  // Clear selections when filters change. Page changes keep the selection so
+  // Select All can cover every page, not only the one on screen.
   useEffect(() => {
+    selectAllGenRef.current += 1;
+    setSelectingAll(false);
     setSelectedTasks(new Set());
-  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, currentPage]);
+    setTaskByIdCache(new Map());
+    setKnownMatchCount(null);
+  }, [selectedStatus, selectedPriorities, selectedProject, selectedStage, selectedDueDate, selectedTeam, selectedAssignees, dateRangeStart, dateRangeEnd, debouncedSearch, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, onlyOverdue, activeStatFilter]);
 
   // Stable callback passed to TaskSearchFilters — prevents the child from
   // re-creating its own internal callbacks on every parent render.
@@ -835,10 +845,23 @@ export function TaskManager() {
     return dueDate >= today && dueDate <= weekFromNow && task.status !== 'completed';
   }, []);
 
+  const rememberTasks = useCallback((list: any[]) => {
+    setTaskByIdCache((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      list.forEach((task) => {
+        const id = String(task.id);
+        if (next.get(id) !== task) {
+          next.set(id, task);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   // Apply filters to tasks
-  
-  
-  const filteredTasksBase = useMemo(() => tasks.filter((task: any) => {
+  const matchesTaskListFilters = useCallback((task: any) => {
     // Apply dashboard filters only (other filters are handled by backend)
     if (state.filters?.overdue && !isOverdue(task)) return false;
     if (state.filters?.dueToday && !isDueToday(task)) return false;
@@ -912,7 +935,12 @@ export function TaskManager() {
     })) return false;
 
     return true;
-  }), [tasks, state.filters, onlyOverdue, activeStatFilter, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+  }, [state.filters, onlyOverdue, activeStatFilter, selectedStatus, selectedStage, selectedDueDate, hasDateRange, dateRangeStart, dateRangeEnd, selectedGradeId, selectedBookId, selectedUnitId, selectedLessonId, isOverdue, isDueToday, isDueTomorrow, isDueThisWeek]);
+
+  const filteredTasksBase = useMemo(
+    () => tasks.filter((task: any) => matchesTaskListFilters(task)),
+    [tasks, matchesTaskListFilters]
+  );
 
   // Apply client-side filters to the kanban dataset.
   // NOTE: Status / priority / activeStatFilter / onlyOverdue are intentionally
@@ -1256,10 +1284,8 @@ export function TaskManager() {
       });
       return;
     }
-    if (selectedTasks.size >= bulkSelectionLimit) {
-      showToast(`You can select at most ${bulkSelectionLimit} tasks at once.`, 'error');
-      return;
-    }
+    const task = filteredTasks.find((item) => item.id.toString() === taskId);
+    if (task) rememberTasks([task]);
     setSelectedTasks((prev) => {
       const next = new Set(prev);
       next.add(taskId);
@@ -1267,24 +1293,91 @@ export function TaskManager() {
     });
   };
 
-  const selectAllTasks = () => {
-    const allTaskIds = filteredTasks.slice(0, bulkSelectionLimit).map(task => task.id.toString());
-    if (filteredTasks.length > bulkSelectionLimit) {
-      showToast(`Selected the first ${bulkSelectionLimit} tasks (maximum at once).`, 'info');
+  const applySelection = (source: any[]) => {
+    rememberTasks(source);
+    setSelectedTasks(new Set(source.map((task) => task.id.toString())));
+  };
+
+  const selectAllTasks = async () => {
+    if (selectingAll) return;
+
+    const serverHasMorePages = !needsAllTasks && totalTasks > tasks.length;
+    if (!serverHasMorePages) {
+      setKnownMatchCount(filteredTasksBase.length);
+      applySelection(filteredTasksBase);
+      return;
     }
-    setSelectedTasks(new Set(allTaskIds));
+
+    const generation = ++selectAllGenRef.current;
+    setSelectingAll(true);
+    try {
+      const { params } = buildTaskListFetchParams(taskListQueryState);
+      const fetchParams: Record<string, string | number> = { ...params, all: 'true' };
+      delete fetchParams.page;
+      delete fetchParams.limit;
+
+      const response = await taskService.getAll(fetchParams);
+      if (generation !== selectAllGenRef.current) return;
+
+      const data = Array.isArray(response) ? response : response?.data ?? [];
+      const matching = data.filter((task) => matchesTaskListFilters(task));
+      setKnownMatchCount(matching.length);
+      applySelection(matching);
+    } catch (err) {
+      if (generation !== selectAllGenRef.current) return;
+      console.error('Failed to select tasks across pages:', err);
+      showToast('Could not select tasks on other pages.', 'error');
+    } finally {
+      if (generation === selectAllGenRef.current) {
+        setSelectingAll(false);
+      }
+    }
+  };
+
+  const selectCurrentPageTasks = () => {
+    const toAdd = filteredTasks.filter((task) => !selectedTasks.has(task.id.toString()));
+    rememberTasks(toAdd);
+    setSelectedTasks((prev) => {
+      const next = new Set(prev);
+      toAdd.forEach((task) => next.add(task.id.toString()));
+      return next;
+    });
   };
 
   const clearAllSelections = () => {
     setSelectedTasks(new Set());
   };
 
+  const selectableAcrossPages = needsAllTasks
+    ? filteredTasksBase.length
+    : (knownMatchCount ?? displayTotalTasks);
+
+  const selectedTaskRecords = useMemo(() => {
+    const fromBase = filteredTasksBase.filter((task) => selectedTasks.has(task.id.toString()));
+    const baseIds = new Set(fromBase.map((task) => task.id.toString()));
+    const extras = Array.from(selectedTasks)
+      .filter((id) => !baseIds.has(id))
+      .map((id) => taskByIdCache.get(id))
+      .filter(Boolean);
+    return [...fromBase, ...extras];
+  }, [filteredTasksBase, selectedTasks, taskByIdCache]);
+
   const isAllSelected = () => {
+    if (selectableAcrossPages === 0 || selectedTasks.size < selectableAcrossPages) return false;
+    if (needsAllTasks) {
+      return filteredTasksBase.every((task) => selectedTasks.has(task.id.toString()));
+    }
+    return true;
+  };
+
+  const isCurrentPageSelected = () => {
     return filteredTasks.length > 0 && filteredTasks.every(task => selectedTasks.has(task.id.toString()));
   };
 
-  const isPartiallySelected = () => {
-    return selectedTasks.size > 0 && selectedTasks.size < filteredTasks.length;
+  const isPartiallySelected = () => selectedTasks.size > 0 && !isAllSelected();
+
+  const isCurrentPagePartiallySelected = () => {
+    return selectedTasks.size > 0 && !isCurrentPageSelected() && filteredTasks.some(task => selectedTasks.has(task.id.toString()));
   };
 
   // Bulk delete function
@@ -1402,6 +1495,7 @@ export function TaskManager() {
                   variant="dark"
                   icon={<Edit2 className="w-4 h-4" />}
                   onClick={() => setIsBulkUpdateModalOpen(true)}
+                  title="Update existing tasks by Task ID via Excel upload. Use date filters below to identify tasks."
                 >
                   Bulk Update
                 </Button>
@@ -1572,8 +1666,8 @@ export function TaskManager() {
         hierarchyTagItems={hierarchyTagItems}
         loadingProjectStages={loadingProjectStages}
         onAddTask={canManageTasks ? () => { setEditingTask(null); setIsCreateModalOpen(true); } : undefined}
-        showAssigneeFilter={isAdminUser}
-        showTeamFilter={isAdminUser}
+        showAssigneeFilter={canViewOrgTasksUi}
+        showTeamFilter={canViewOrgTasksUi}
       />
 
       {/* Bulk Selection Controls */}
@@ -1585,6 +1679,8 @@ export function TaskManager() {
                 <input
                   type="checkbox"
                   checked={isAllSelected()}
+                  disabled={selectingAll}
+                  title="Select tasks on every page"
                   ref={(input) => {
                     if (input) input.indeterminate = isPartiallySelected();
                   }}
@@ -1592,13 +1688,13 @@ export function TaskManager() {
                     if (isAllSelected()) {
                       clearAllSelections();
                     } else {
-                      selectAllTasks();
+                      void selectAllTasks();
                     }
                   }}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                 />
                 <span className="text-sm font-medium text-gray-700">
-                  {isAllSelected() ? 'Deselect All' : 'Select All'}
+                  {selectingAll ? 'Selecting all pages…' : isAllSelected() ? 'Deselect All' : 'Select All'}
                 </span>
               </div>
               
@@ -1621,23 +1717,9 @@ export function TaskManager() {
 
             {selectedTasks.size > 0 && (
               <BulkTaskSelectionActions
-                selectedTaskIds={[
-                  ...filteredTasksBase
-                    .filter((task) => selectedTasks.has(task.id.toString()))
-                    .map((task) => task.id),
-                  ...Array.from(selectedTasks).filter(
-                    (id) => !filteredTasksBase.some((task) => task.id.toString() === id)
-                  ),
-                ]}
-                selectedTaskNames={[
-                  ...filteredTasksBase
-                    .filter((task) => selectedTasks.has(task.id.toString()))
-                    .map((task) => task.name),
-                  ...Array.from(selectedTasks)
-                    .filter((id) => !filteredTasksBase.some((task) => task.id.toString() === id))
-                    .map((id) => `Task ${id}`),
-                ]}
-                selectedTasks={filteredTasksBase.filter((task) => selectedTasks.has(task.id.toString()))}
+                selectedTaskIds={selectedTaskRecords.map((task) => task.id)}
+                selectedTaskNames={selectedTaskRecords.map((task) => task.name)}
+                selectedTasks={selectedTaskRecords}
                 teamMembers={teamMembers}
                 assigneeMode={!canManageTasks}
                 onSuccess={async () => {
@@ -1704,15 +1786,22 @@ export function TaskManager() {
                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <input
                         type="checkbox"
-                        checked={isAllSelected()}
+                        title="Select tasks on this page"
+                        checked={isCurrentPageSelected()}
                         ref={(input) => {
-                          if (input) input.indeterminate = isPartiallySelected();
+                          if (input) input.indeterminate = isCurrentPagePartiallySelected();
                         }}
                         onChange={() => {
-                          if (isAllSelected()) {
-                            clearAllSelections();
+                          if (isCurrentPageSelected()) {
+                            // Deselect only current page tasks
+                            const pageTaskIds = new Set(filteredTasks.map(task => task.id.toString()));
+                            setSelectedTasks((prev) => {
+                              const next = new Set(prev);
+                              pageTaskIds.forEach(id => next.delete(id));
+                              return next;
+                            });
                           } else {
-                            selectAllTasks();
+                            selectCurrentPageTasks();
                           }
                         }}
                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -2226,15 +2315,12 @@ export function TaskManager() {
             <div className="bg-gray-50 p-3 rounded-lg">
               <h4 className="text-sm font-medium text-gray-700 mb-2">Tasks to be deleted:</h4>
               <div className="max-h-32 overflow-y-auto space-y-1">
-                {Array.from(selectedTasks).map(taskId => {
-                  const task = filteredTasks.find(t => t.id.toString() === taskId);
-                  return task ? (
-                    <div key={taskId} className="text-sm text-gray-600 flex items-center">
+                {selectedTaskRecords.map((task) => (
+                    <div key={task.id} className="text-sm text-gray-600 flex items-center">
                       <span className="w-2 h-2 bg-red-400 rounded-full mr-2"></span>
                       {task.name}
                     </div>
-                  ) : null;
-                })}
+                ))}
               </div>
             </div>
           )}

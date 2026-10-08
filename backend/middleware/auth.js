@@ -1,5 +1,24 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
+const {
+  loadMemberAccess,
+  applyAccessToUser,
+  isElevatedTeamUser,
+} = require('../utils/accessPermissions');
+
+async function attachTeamAccess(user, role) {
+  try {
+    const access = await loadMemberAccess(user.id, role || user.role || 'employee');
+    return applyAccessToUser(user, access);
+  } catch (error) {
+    console.error('attachTeamAccess error:', error.message);
+    user.permissions = user.permissions || {};
+    user.writeAccess = !!user.permissions.write_access;
+    user.allTeamsAccess = !!user.permissions.all_teams_access;
+    user.accessTeamIds = user.accessTeamIds || [];
+    return user;
+  }
+}
 
 // Middleware to verify admin JWT token
 const requireAdminAuth = async (req, res, next) => {
@@ -133,23 +152,13 @@ const requireTeamAuth = async (req, res, next) => {
 
     const teamMember = teamMemberRows[0];
 
-    // Load permissions
-    const permRows = await db.query(
-      'SELECT permission_key, is_granted FROM team_member_permissions WHERE team_member_id = ?',
-      [teamMember.id]
-    );
-    const permissions = {};
-    permRows.forEach(p => { permissions[p.permission_key] = !!p.is_granted; });
-
-    // Add user to request object
-    req.user = {
+    req.user = await attachTeamAccess({
       id: teamMember.id,
       email: teamMember.email,
       name: teamMember.name,
       role: teamMember.role || 'employee',
-      permissions,
-      type: 'team'
-    };
+      type: 'team',
+    }, teamMember.role || 'employee');
 
     next();
   } catch (error) {
@@ -254,22 +263,13 @@ const requireAuth = async (req, res, next) => {
 
       const teamMember = teamMemberRows[0];
 
-      // Load permissions
-      const permRows = await db.query(
-        'SELECT permission_key, is_granted FROM team_member_permissions WHERE team_member_id = ?',
-        [teamMember.id]
-      );
-      const permissions = {};
-      permRows.forEach(p => { permissions[p.permission_key] = !!p.is_granted; });
-
-      req.user = {
+      req.user = await attachTeamAccess({
         id: teamMember.id,
         email: teamMember.email,
         name: teamMember.name,
         role: teamMember.role || 'employee',
-        permissions,
-        type: 'team'
-      };
+        type: 'team',
+      }, teamMember.role || 'employee');
 
     } else {
       return res.status(403).json({
@@ -399,31 +399,21 @@ const requireAdminOrPMAuth = async (req, res, next) => {
       }
 
       const teamMember = teamMemberRows[0];
-
-      // Only allow project_manager role
-      if (teamMember.role !== 'project_manager') {
-        return res.status(403).json({
-          success: false,
-          message: 'Project Manager access required'
-        });
-      }
-
-      // Load permissions for reference by controllers
-      const permRows = await db.query(
-        'SELECT permission_key, is_granted FROM team_member_permissions WHERE team_member_id = ?',
-        [teamMember.id]
-      );
-      const permissions = {};
-      permRows.forEach(p => { permissions[p.permission_key] = !!p.is_granted; });
-
-      req.user = {
+      req.user = await attachTeamAccess({
         id: teamMember.id,
         email: teamMember.email,
         name: teamMember.name,
-        role: 'project_manager',
-        permissions,
-        type: 'team'
-      };
+        role: teamMember.role || 'employee',
+        type: 'team',
+      }, teamMember.role || 'employee');
+
+      if (!isElevatedTeamUser(req.user)) {
+        return res.status(403).json({
+          success: false,
+          message: 'This feature requires access granted by an admin',
+        });
+      }
+
       return next();
     }
 

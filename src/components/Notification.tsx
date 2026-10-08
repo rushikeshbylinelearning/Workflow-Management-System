@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { RichTextDisplay } from './ui/RichTextEditor';
+import { RemarkExtraFieldsDisplay } from './RemarkExtraFields';
 import { useToast } from './ui/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
@@ -59,6 +60,7 @@ interface TaskRemark extends Notification {
   task_status: string;
   server_location?: string;
   file_name?: string;
+  extra_fields?: unknown;
 }
 
 interface NotificationsData {
@@ -888,6 +890,8 @@ export function Notification() {
                       )}
                     </div>
                   )}
+
+                  <RemarkExtraFieldsDisplay extraFields={remark.extra_fields} />
                   
                   {/* Remark Content - Middle Section */}
                   <div className="bg-white/30 rounded-lg p-4 border border-white/20 mb-4">

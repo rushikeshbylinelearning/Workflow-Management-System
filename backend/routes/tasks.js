@@ -30,6 +30,7 @@ const {
   bulkReassignTasks,
   bulkUpdateTaskDates,
   bulkApproveTasks,
+  bulkUpdateTaskNames,
   // Extension endpoints
   requestTaskExtension,
   getTaskExtensions,
@@ -602,6 +603,28 @@ router.post('/bulk-approve',
   ],
   handleValidationErrors,
   bulkApproveTasks
+);
+
+// Bulk update task names
+router.post('/bulk-update-names',
+  requireAdminOrPMAuth,
+  [
+    body('updates')
+      .isArray({ min: 1, max: 500 })
+      .withMessage('updates must be a non-empty array of at most 500 items'),
+    body('updates.*.id')
+      .isInt({ min: 1 })
+      .withMessage('Each task ID must be a positive integer'),
+    body('updates.*.name')
+      .isString()
+      .trim()
+      .notEmpty()
+      .withMessage('Each task name must be a non-empty string')
+      .isLength({ max: 255 })
+      .withMessage('Each task name must be at most 255 characters'),
+  ],
+  handleValidationErrors,
+  bulkUpdateTaskNames
 );
 
 // Bulk assign tasks (assign unassigned tasks to a team member)

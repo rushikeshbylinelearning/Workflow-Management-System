@@ -79,7 +79,11 @@ import { Notification } from './Notification';
 import { Dashboard } from './Dashboard';
 import { TaskManager } from './TaskManager';
 import { BulkTaskSelectionActions } from './BulkTaskSelectionActions';
-import { MAX_BULK_ROWS } from '../utils/bulkRemark';
+import { RemarkTypeSelect } from './RemarkTypeSelect';
+import { RemarkExtraFieldsInputs } from './RemarkExtraFields';
+import { MAX_BULK_ROWS, remarkStatusEffect } from '../utils/bulkRemark';
+import { useRemarkOptions } from '../hooks/useRemarkOptions';
+import { missingRequiredRemarkFields, useRemarkFields } from '../hooks/useRemarkFields';
 
 interface TeamMemberPortalProps {
   user: UserType;
@@ -89,7 +93,7 @@ interface TeamMemberPortalProps {
 // All portal nav items mapped to permissions
 const NAV_ITEMS = [
   { key: 'my-tasks',       label: 'My Tasks',       icon: CheckSquare,     permission: null,                  alwaysVisible: true,  pmOnly: false },
-  { key: 'dashboard',      label: 'Dashboard',      icon: LayoutDashboard, permission: 'view_dashboard',      alwaysVisible: false, pmOnly: true  },
+  { key: 'dashboard',      label: 'Dashboard',      icon: LayoutDashboard, permission: 'view_dashboard',      alwaysVisible: false, pmOnly: false },
   { key: 'projects',       label: 'Projects',       icon: FolderOpen,      permission: 'view_projects',       alwaysVisible: false, pmOnly: false },
   { key: 'tasks',          label: 'All Tasks',      icon: CheckSquare,     permission: 'view_tasks',          alwaysVisible: false, pmOnly: false },
   { key: 'teams',          label: 'Teams',          icon: Users,           permission: 'view_team',           alwaysVisible: false, pmOnly: false },
@@ -104,6 +108,8 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   const { showToast } = useToast();
   const { state, dispatch } = useApp();
   const { can, accessInfo, loading: permissionsLoading, refetch: refetchPermissions } = usePermissions();
+  const { options: remarkOptions } = useRemarkOptions();
+  const { fields: extraFieldDefs, enforceRequired } = useRemarkFields();
 
   const [activeView, setActiveView] = useState<string>('my-tasks');
   const [previousView, setPreviousView] = useState<string>('my-tasks');
@@ -125,6 +131,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
   const [remarkType, setRemarkType] = useState('general');
   const [serverLocation, setServerLocation] = useState('');
   const [fileName, setFileName] = useState('');
+  const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [performanceFlags, setPerformanceFlags] = useState<any[]>([]);
@@ -409,17 +416,19 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
         if (tokenService.isTeamTokenExpired()) { onLogout(); return; }
         if (!serverLocation.trim()) { showToast('❌ Server Location is required.', 'error'); return; }
         if (!fileName.trim()) { showToast('❌ File Name is required.', 'error'); return; }
+        const missingExtra = missingRequiredRemarkFields(extraFieldDefs, extraFieldValues, enforceRequired);
+        if (missingExtra.length > 0) { showToast(`❌ ${missingExtra[0].label} is required.`, 'error'); return; }
         const remarkLengthError = getRemarkLengthMessage(remarkContent);
         if (remarkLengthError) { showToast(`❌ ${remarkLengthError}`, 'error'); return; }
         await teamTaskService.addRemark(selectedTask.id, {
           remark: remarkContent, remark_date: remarkDate, remark_type: remarkType,
-          server_location: serverLocation, file_name: fileName
+          server_location: serverLocation, file_name: fileName, extra_fields: extraFieldValues
         });
-        if (remarkType === 'complete') {
+        if (remarkStatusEffect(remarkType, remarkOptions) === 'under-review') {
           showToast('Task submitted for review!', 'success');
-        } else if (remarkType === 'skipped') {
+        } else if (remarkStatusEffect(remarkType, remarkOptions) === 'skipped') {
           showToast('Task marked as skipped!', 'success');
-        } else if (remarkType === 'general' && selectedTask.status === 'not-started') {
+        } else if (remarkStatusEffect(remarkType, remarkOptions) === 'in-progress' && selectedTask.status === 'not-started') {
           showToast('Task marked as In Progress (50%).', 'success');
         } else {
           showToast('Remark added!', 'success');
@@ -432,7 +441,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
     }
     setIsRemarkModalOpen(false); setSelectedTask(null); setRemarkContent('');
     setRemarkDate(new Date().toISOString().split('T')[0]); setRemarkType('general');
-    setServerLocation(''); setFileName('');
+    setServerLocation(''); setFileName(''); setExtraFieldValues({});
   };
 
   const isTaskOverdue = (task: Task) => {
@@ -1460,28 +1469,12 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
           )}
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">Remark Type</label>
-            <select value={remarkType} onChange={e => setRemarkType(e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-              <option value="general">General / In Progress</option>
-              <option value="complete">Completed</option>
-              <option value="skipped">Skipped</option>
-              <option value="other">Other</option>
-            </select>
-            {remarkType === 'general' && selectedTask?.status === 'not-started' && (
-              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800"><strong>Note:</strong> This will mark the task as In Progress and set progress to 50%.</p>
-              </div>
-            )}
-            {remarkType === 'complete' && (
-              <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-sm text-yellow-800"><strong>Note:</strong> Selecting "Complete" will submit this task for admin review.</p>
-              </div>
-            )}
-            {remarkType === 'skipped' && (
-              <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-sm text-red-800"><strong>Warning:</strong> Selecting "Skipped" will mark this task as skipped and set progress to 0%.</p>
-              </div>
-            )}
+            <RemarkTypeSelect
+              value={remarkType}
+              onChange={setRemarkType}
+              options={remarkOptions}
+              taskStatus={selectedTask?.status}
+            />
           </div>
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">Server Location <span className="text-red-500">*</span></label>
@@ -1497,6 +1490,12 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
               className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent" />
             <p className="text-xs text-gray-500 mt-1">The exact name of the file you worked on</p>
           </div>
+          <RemarkExtraFieldsInputs
+            fields={extraFieldDefs}
+            values={extraFieldValues}
+            enforceRequired={enforceRequired}
+            onChange={(slug, value) => setExtraFieldValues((prev) => ({ ...prev, [slug]: value }))}
+          />
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">Remark Content</label>
             <RichTextEditor value={remarkContent} onChange={setRemarkContent}
@@ -1508,7 +1507,7 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
           <div className="flex justify-end gap-4">
             <Button variant="outline" onClick={() => setIsRemarkModalOpen(false)}>Cancel</Button>
             <Button onClick={submitRemark}
-              disabled={remarkContent.replace(/<[^>]*>/g, '').trim().length === 0 || isRemarkTooLong(remarkContent) || !serverLocation.trim() || !fileName.trim()}
+              disabled={remarkContent.replace(/<[^>]*>/g, '').trim().length === 0 || isRemarkTooLong(remarkContent) || !serverLocation.trim() || !fileName.trim() || missingRequiredRemarkFields(extraFieldDefs, extraFieldValues, enforceRequired).length > 0}
               className="bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-50">Add Remark</Button>
           </div>
         </div>

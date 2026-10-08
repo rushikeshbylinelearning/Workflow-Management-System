@@ -24,7 +24,8 @@ const exportTasks = async (req, res) => {
       status, priority, project_id, stage_id,
       assignee_id, search, due_date,
       statusIn, priorityIn, assigneeIdIn,
-      dateRangeStart, dateRangeEnd, team_id
+      dateRangeStart, dateRangeEnd, team_id,
+      grade_id, book_id, unit_id, lesson_id
     } = req.query;
 
     const filters = {};
@@ -51,6 +52,12 @@ const exportTasks = async (req, res) => {
     if (dateRangeStart) filters.dateRangeStart = dateRangeStart;
     if (dateRangeEnd) filters.dateRangeEnd = dateRangeEnd;
     if (team_id && team_id !== 'all') filters.team_id = team_id;
+
+    // Parse educational hierarchy (tag) filters
+    if (grade_id) filters.grade_id = grade_id;
+    if (book_id) filters.book_id = book_id;
+    if (unit_id) filters.unit_id = unit_id;
+    if (lesson_id) filters.lesson_id = lesson_id;
 
     const buffer = await exportTasksToExcel(filters, req.user);
 

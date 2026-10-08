@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { RichTextDisplay } from './ui/RichTextEditor';
+import { RemarkExtraFieldsDisplay } from './RemarkExtraFields';
 import { useApp } from '../contexts/AppContext';
 import { notificationService as apiNotificationService } from '../services/apiService';
 import notificationService from '../services/notificationService';
@@ -57,6 +58,7 @@ interface TaskRemark {
   is_new: boolean;
   server_location?: string;
   file_name?: string;
+  extra_fields?: unknown;
 }
 
 interface TaskCompletion {
@@ -586,6 +588,8 @@ export function TeamNotifications({ onBack }: TeamNotificationsProps) {
                             )}
                           </div>
                         )}
+
+                        <RemarkExtraFieldsDisplay extraFields={remark.extra_fields} />
 
                         <div className="mb-3">
                           <div className="text-sm text-gray-700">

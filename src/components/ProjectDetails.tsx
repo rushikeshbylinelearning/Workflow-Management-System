@@ -187,74 +187,79 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
     return () => clearTimeout(t);
   }, [searchTerm]);
 
+  // Memoized filtered tasks (before pagination)
+  const filteredProjectTasks = useMemo(() => {
+    return allProjectTasks.filter((task: any) => {
+      // Search filter
+      if (debouncedSearch) {
+        const searchLower = debouncedSearch.toLowerCase();
+        if (!task.name.toLowerCase().includes(searchLower) && 
+            !task.description.toLowerCase().includes(searchLower)) {
+          return false;
+        }
+      }
+      
+      // Status filter
+      if (selectedStatus !== 'all' && selectedStatus !== 'overdue') {
+        if (task.status !== selectedStatus) {
+          return false;
+        }
+      }
+      
+      // Overdue filter (handled separately as it's not a status but a date-based condition)
+      if (selectedStatus === 'overdue') {
+        const endDate = task.end_date || task.endDate;
+        if (!endDate || task.status === 'completed') return false;
+        
+        // Get today's date at midnight (start of day)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        // Get the end date at midnight (start of day)
+        const dueDate = new Date(endDate);
+        dueDate.setHours(0, 0, 0, 0);
+        
+        // Task is overdue if due date is before today AND not completed
+        if (dueDate >= today) {
+          return false;
+        }
+      }
+      
+      // Priority filter
+      if (selectedPriority !== 'all' && task.priority !== selectedPriority) {
+        return false;
+      }
+      
+      // Assignee filter
+      if (selectedAssignee !== 'all') {
+        if (selectedAssignee === 'none') {
+          if (task.assignees && task.assignees.length > 0) {
+            return false;
+          }
+        } else {
+          if (!task.assignees || !task.assignees.map((id: any) => String(id)).includes(String(selectedAssignee))) {
+            return false;
+          }
+        }
+      }
+
+      // Stage filter (category_stage_id)
+      if (selectedStage !== 'all') {
+        const taskStageId = task.category_stage_id ? parseInt(task.category_stage_id.toString()) : (task.stage_id ? parseInt(task.stage_id.toString()) : null);
+        if (taskStageId !== parseInt(selectedStage)) {
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  }, [allProjectTasks, debouncedSearch, selectedStatus, selectedPriority, selectedAssignee, selectedStage]);
+
   // Handle pagination and filtering changes
   useEffect(() => {
     if (allProjectTasks.length > 0) {
-      // Apply filters
-      let filteredTasks = allProjectTasks.filter((task: any) => {
-        // Search filter
-        if (debouncedSearch) {
-          const searchLower = debouncedSearch.toLowerCase();
-          if (!task.name.toLowerCase().includes(searchLower) && 
-              !task.description.toLowerCase().includes(searchLower)) {
-            return false;
-          }
-        }
-        
-        // Status filter
-        if (selectedStatus !== 'all' && selectedStatus !== 'overdue') {
-          if (task.status !== selectedStatus) {
-            return false;
-          }
-        }
-        
-        // Overdue filter (handled separately as it's not a status but a date-based condition)
-        if (selectedStatus === 'overdue') {
-          const endDate = task.end_date || task.endDate;
-          if (!endDate || task.status === 'completed') return false;
-          
-          // Get today's date at midnight (start of day)
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          
-          // Get the end date at midnight (start of day)
-          const dueDate = new Date(endDate);
-          dueDate.setHours(0, 0, 0, 0);
-          
-          // Task is overdue if due date is before today AND not completed
-          if (dueDate >= today) {
-            return false;
-          }
-        }
-        
-        // Priority filter
-        if (selectedPriority !== 'all' && task.priority !== selectedPriority) {
-          return false;
-        }
-        
-        // Assignee filter
-        if (selectedAssignee !== 'all') {
-          if (selectedAssignee === 'none') {
-            if (task.assignees && task.assignees.length > 0) {
-              return false;
-            }
-          } else {
-            if (!task.assignees || !task.assignees.map((id: any) => String(id)).includes(String(selectedAssignee))) {
-              return false;
-            }
-          }
-        }
-
-        // Stage filter (category_stage_id)
-        if (selectedStage !== 'all') {
-          const taskStageId = task.category_stage_id ? parseInt(task.category_stage_id.toString()) : (task.stage_id ? parseInt(task.stage_id.toString()) : null);
-          if (taskStageId !== parseInt(selectedStage)) {
-            return false;
-          }
-        }
-        
-        return true;
-      });
+      // Use the memoized filtered tasks
+      const filteredTasks = filteredProjectTasks;
       
       // Update total count for filtered results
       setTotalTasks(filteredTasks.length);
@@ -271,7 +276,7 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
       const endIndex = startIndex + pageSize;
       setProjectTasks(filteredTasks.slice(startIndex, endIndex));
     }
-  }, [currentPage, pageSize, allProjectTasks, debouncedSearch, selectedStatus, selectedPriority, selectedAssignee, selectedStage]);
+  }, [currentPage, pageSize, filteredProjectTasks, allProjectTasks]);
 
   const refreshProjectTaskData = useCallback(async () => {
     try {
@@ -414,11 +419,20 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
   };
 
   const selectAllTasks = () => {
-    const allTaskIds = projectTasks.slice(0, MAX_BULK_ROWS_ADMIN).map(task => task.id.toString());
-    if (projectTasks.length > MAX_BULK_ROWS_ADMIN) {
+    const allTaskIds = filteredProjectTasks.slice(0, MAX_BULK_ROWS_ADMIN).map(task => task.id.toString());
+    if (filteredProjectTasks.length > MAX_BULK_ROWS_ADMIN) {
       showToast(`Selected the first ${MAX_BULK_ROWS_ADMIN} tasks (maximum at once).`, 'info');
     }
     setSelectedTasks(new Set(allTaskIds));
+  };
+
+  const selectCurrentPageTasks = () => {
+    const pageTaskIds = projectTasks.map(task => task.id.toString());
+    setSelectedTasks((prev) => {
+      const next = new Set(prev);
+      pageTaskIds.forEach(id => next.add(id));
+      return next;
+    });
   };
 
   const clearAllSelections = () => {
@@ -426,11 +440,21 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
   };
 
   const isAllSelected = () => {
+    const tasksToConsider = filteredProjectTasks.slice(0, MAX_BULK_ROWS_ADMIN);
+    return tasksToConsider.length > 0 && tasksToConsider.every(task => selectedTasks.has(task.id.toString()));
+  };
+
+  const isCurrentPageSelected = () => {
     return projectTasks.length > 0 && projectTasks.every(task => selectedTasks.has(task.id.toString()));
   };
 
   const isPartiallySelected = () => {
-    return selectedTasks.size > 0 && selectedTasks.size < projectTasks.length;
+    const tasksToConsider = filteredProjectTasks.slice(0, MAX_BULK_ROWS_ADMIN);
+    return selectedTasks.size > 0 && selectedTasks.size < tasksToConsider.length;
+  };
+
+  const isCurrentPagePartiallySelected = () => {
+    return selectedTasks.size > 0 && !isCurrentPageSelected() && projectTasks.some(task => selectedTasks.has(task.id.toString()));
   };
 
   // Bulk delete function
@@ -1623,15 +1647,21 @@ export function ProjectDetails({ project, onBack, onUpdate, categories }: Projec
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         <input
                           type="checkbox"
-                          checked={isAllSelected()}
+                          checked={isCurrentPageSelected()}
                           ref={(input) => {
-                            if (input) input.indeterminate = isPartiallySelected();
+                            if (input) input.indeterminate = isCurrentPagePartiallySelected();
                           }}
                           onChange={() => {
-                            if (isAllSelected()) {
-                              clearAllSelections();
+                            if (isCurrentPageSelected()) {
+                              // Deselect only current page tasks
+                              const pageTaskIds = new Set(projectTasks.map(task => task.id.toString()));
+                              setSelectedTasks((prev) => {
+                                const next = new Set(prev);
+                                pageTaskIds.forEach(id => next.delete(id));
+                                return next;
+                              });
                             } else {
-                              selectAllTasks();
+                              selectCurrentPageTasks();
                             }
                           }}
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"

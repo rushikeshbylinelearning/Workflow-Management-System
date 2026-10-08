@@ -45,6 +45,11 @@ import {
   isRemarkTooLong,
   REMARK_MAX_PLAIN_LENGTH,
 } from '../utils/remarkLimits';
+import { RemarkTypeSelect } from './RemarkTypeSelect';
+import { RemarkExtraFieldsDisplay, RemarkExtraFieldsInputs } from './RemarkExtraFields';
+import { useRemarkOptions } from '../hooks/useRemarkOptions';
+import { missingRequiredRemarkFields, useRemarkFields } from '../hooks/useRemarkFields';
+import { remarkStatusEffect } from '../utils/bulkRemark';
 
 const remarkHistoryFetcher = {
   getRemarksHistory: taskService.getRemarksHistory.bind(taskService),
@@ -77,6 +82,8 @@ interface TeamTaskDetailProps {
 export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, embedded = false, onTaskMeta }: TeamTaskDetailProps) {
   const { showToast } = useToast();
   const { user: adminUser } = useAuth();
+  const { options: remarkOptions } = useRemarkOptions();
+  const { fields: extraFieldDefs, enforceRequired } = useRemarkFields();
   const [localTask, setLocalTask] = useState<Task | null>(taskProp ?? null);
   const [reviewNotes, setReviewNotes] = useState('');
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
@@ -90,6 +97,7 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
   const [remarkType, setRemarkType] = useState('general');
   const [serverLocation, setServerLocation] = useState('');
   const [fileName, setFileName] = useState('');
+  const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<any[]>([]);
   const [extensions, setExtensions] = useState<any[]>([]);
   const [, setLoading] = useState(false);
@@ -274,6 +282,11 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
           showToast('❌ File Name is required. Please provide the exact name of the file you worked on.', 'error');
           return;
         }
+        const missingExtra = missingRequiredRemarkFields(extraFieldDefs, extraFieldValues, enforceRequired);
+        if (missingExtra.length > 0) {
+          showToast(`❌ ${missingExtra[0].label} is required.`, 'error');
+          return;
+        }
 
         const remarkLengthError = getRemarkLengthMessage(remarkContent);
         if (remarkLengthError) {
@@ -282,13 +295,14 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
         }
 
         const isAssignee = adminUser?.type === 'team';
-        const promotesToInProgress = remarkType === 'general' && localTask?.status === 'not-started';
+        const effect = remarkStatusEffect(remarkType, remarkOptions);
+        const promotesToInProgress = effect === 'in-progress' && localTask?.status === 'not-started';
         setOptimisticTimelineEntry(
           buildOptimisticTimelineEntry({
             user: adminUser?.name || 'You',
             role: isAssignee ? 'Assignee' : 'Admin',
-            action: remarkType === 'complete' ? 'Submitted' : promotesToInProgress ? 'Status Updated' : 'Remark Added',
-            action_type: remarkType === 'complete' ? 'submitted' : promotesToInProgress ? 'status_updated' : 'remark_added',
+            action: effect === 'under-review' ? 'Submitted' : promotesToInProgress ? 'Status Updated' : 'Remark Added',
+            action_type: effect === 'under-review' ? 'submitted' : promotesToInProgress ? 'status_updated' : 'remark_added',
             remark: remarkContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
           })
         );
@@ -298,12 +312,13 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
           remark_date: remarkDate,
           remark_type: remarkType,
           server_location: serverLocation,
-          file_name: fileName
+          file_name: fileName,
+          extra_fields: extraFieldValues,
         });
 
-        if (remarkType === 'complete') {
+        if (effect === 'under-review') {
           showToast(`Task "${localTask?.name}" has been submitted for review with completion remark!`, 'success');
-        } else if (remarkType === 'skipped') {
+        } else if (effect === 'skipped') {
           showToast(`Task "${localTask?.name}" has been marked as skipped!`, 'success');
         } else if (promotesToInProgress) {
           showToast(`Task "${localTask?.name}" marked as In Progress (50%).`, 'success');
@@ -340,6 +355,8 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
     setRemarkType('general');
     setServerLocation('');
     setFileName('');
+    setExtraFieldValues({});
+    setExtraFieldValues({});
   };
 
   const handleOpenFlagModal = (memberId: number, memberName: string) => {
@@ -1118,6 +1135,8 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
                           )}
                         </div>
                       )}
+
+                      <RemarkExtraFieldsDisplay extraFields={remark.extra_fields} />
                       
                       <div className="prose prose-sm max-w-none">
                         <RichTextDisplay content={remark.remark} />
@@ -1210,43 +1229,13 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
             <label className="block text-sm font-semibold text-gray-700 mb-3">
               Remark Type
             </label>
-            <select
+            <RemarkTypeSelect
               value={remarkType}
-              onChange={(e) => setRemarkType(e.target.value)}
+              onChange={setRemarkType}
+              options={remarkOptions}
+              taskStatus={localTask?.status}
               className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
-            >
-              <option value="general">General / In Progress</option>
-              <option value="complete">Completed</option>
-              <option value="skipped">Skipped</option>
-              <option value="other">Other</option>
-            </select>
-            {remarkType === 'general' && localTask?.status === 'not-started' && (
-              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  <strong>Note:</strong> This will mark the task as In Progress and set progress to 50%.
-                </p>
-              </div>
-            )}
-            {remarkType === 'complete' && (
-              <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="w-4 h-4 text-yellow-600" />
-                  <p className="text-sm text-yellow-800">
-                    <strong>Note:</strong> Selecting "Complete" will submit this task for admin review. The task status will change to "Under Review" and an admin will need to approve it.
-                  </p>
-                </div>
-              </div>
-            )}
-            {remarkType === 'skipped' && (
-              <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="w-4 h-4 text-red-600" />
-                  <p className="text-sm text-red-800">
-                    <strong>Warning:</strong> Selecting "Skipped" will mark this task as skipped and set its progress to 0.
-                  </p>
-                </div>
-              </div>
-            )}
+            />
           </div>
 
           {/* Server Location - Required for team members */}
@@ -1281,6 +1270,13 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
             <p className="text-xs text-gray-500 mt-1">The exact name of the file you worked on</p>
           </div>
 
+          <RemarkExtraFieldsInputs
+            fields={extraFieldDefs}
+            values={extraFieldValues}
+            enforceRequired={enforceRequired}
+            onChange={(slug, value) => setExtraFieldValues((prev) => ({ ...prev, [slug]: value }))}
+          />
+
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-3">
               Remark Content
@@ -1310,7 +1306,8 @@ export function TeamTaskDetail({ task: taskProp, taskId, onBack, onTaskUpdate, e
                 remarkContent.replace(/<[^>]*>/g, '').trim().length === 0 ||
                 isRemarkTooLong(remarkContent) ||
                 !serverLocation.trim() ||
-                !fileName.trim()
+                !fileName.trim() ||
+                missingRequiredRemarkFields(extraFieldDefs, extraFieldValues, enforceRequired).length > 0
               }
               className="px-6 py-3 font-semibold bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >

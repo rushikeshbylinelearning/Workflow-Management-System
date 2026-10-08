@@ -14,15 +14,21 @@ export function getBulkSelectionLimit(isAdminSide: boolean): number {
   return isAdminSide ? MAX_BULK_ROWS_ADMIN : MAX_BULK_ROWS;
 }
 
-export const BULK_REMARK_STAGE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'general', label: 'General / In Progress' },
-  { value: 'complete', label: 'Completed' },
-  { value: 'skipped', label: 'Skipped' },
-  { value: 'other', label: 'Other' },
+export const SYSTEM_REMARK_OPTIONS: Array<{ value: string; label: string; statusEffect?: string; isSystem?: boolean }> = [
+  { value: 'general', label: 'General / In Progress', statusEffect: 'in-progress', isSystem: true },
+  { value: 'complete', label: 'Completed', statusEffect: 'under-review', isSystem: true },
+  { value: 'skipped', label: 'Skipped', statusEffect: 'skipped', isSystem: true },
+  { value: 'other', label: 'Other', statusEffect: 'none', isSystem: true },
 ];
 
+export const BULK_REMARK_STAGE_OPTIONS = SYSTEM_REMARK_OPTIONS;
+
 export const EDITABLE_BULK_REMARK_COLUMNS = ['stage', 'fileLocation', 'fileName', 'remark'] as const;
-export type BulkRemarkEditableColumn = (typeof EDITABLE_BULK_REMARK_COLUMNS)[number];
+export type BulkRemarkEditableColumn = string;
+
+export function getBulkRemarkEditableColumns(extraSlugs: string[] = []): string[] {
+  return ['stage', 'fileLocation', 'fileName', ...extraSlugs, 'remark'];
+}
 
 function asTagText(value: unknown): string {
   if (value == null) return '';
@@ -75,7 +81,28 @@ export function statusToRemarkStage(status?: string): string {
   return 'general';
 }
 
-export function matchRemarkStage(pasted: string): string | null {
+export function remarkStatusEffect(
+  value: string,
+  options: Array<{ value: string; statusEffect?: string }> = SYSTEM_REMARK_OPTIONS
+): string {
+  return options.find((option) => option.value === value)?.statusEffect
+    || SYSTEM_REMARK_OPTIONS.find((option) => option.value === value)?.statusEffect
+    || 'none';
+}
+
+export function remarkStageLabel(
+  value?: string,
+  options: Array<{ value: string; label: string }> = SYSTEM_REMARK_OPTIONS
+): string {
+  const key = String(value || '').trim().toLowerCase();
+  const match = options.find((option) => option.value.toLowerCase() === key);
+  return match?.label || SYSTEM_REMARK_OPTIONS.find((option) => option.value === key)?.label || value || '—';
+}
+
+export function matchRemarkStage(
+  pasted: string,
+  options: Array<{ value: string; label: string }> = SYSTEM_REMARK_OPTIONS
+): string | null {
   const normalized = pasted.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (!normalized) return null;
   const aliases: Record<string, string> = {
@@ -90,9 +117,11 @@ export function matchRemarkStage(pasted: string): string | null {
     other: 'other',
   };
   if (aliases[normalized]) return aliases[normalized];
-  const match = BULK_REMARK_STAGE_OPTIONS.find((option) => (
+  const catalog = options.length > 0 ? options : SYSTEM_REMARK_OPTIONS;
+  const match = catalog.find((option) => (
     option.value.toLowerCase() === normalized
     || option.label.toLowerCase() === normalized
+    || option.label.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ') === normalized
   ));
   return match ? match.value : null;
 }
@@ -106,16 +135,19 @@ export function parseClipboardGrid(text: string): string[][] {
   return lines.map((line) => line.split('\t'));
 }
 
-export function applyPasteGrid<T extends Record<BulkRemarkEditableColumn, string> & { taskId?: string | number }>(
+export function applyPasteGrid<T extends { taskId?: string | number; extra?: Record<string, string> }>(
   rows: T[],
   startRow: number,
-  startCol: BulkRemarkEditableColumn,
-  grid: string[][]
+  startCol: string,
+  grid: string[][],
+  stageOptions: Array<{ value: string; label: string }> = SYSTEM_REMARK_OPTIONS,
+  extraSlugs: string[] = []
 ): { rows: T[]; invalidStageCells: Set<string>; validStageCells: Set<string> } {
-  const next = rows.map((row) => ({ ...row }));
+  const next = rows.map((row) => ({ ...row, extra: { ...(row.extra || {}) } }));
   const invalidStageCells = new Set<string>();
   const validStageCells = new Set<string>();
-  const startColIndex = EDITABLE_BULK_REMARK_COLUMNS.indexOf(startCol);
+  const columns = getBulkRemarkEditableColumns(extraSlugs);
+  const startColIndex = columns.indexOf(startCol);
   if (startColIndex < 0) return { rows: next, invalidStageCells, validStageCells };
 
   for (let r = 0; r < grid.length; r += 1) {
@@ -124,11 +156,11 @@ export function applyPasteGrid<T extends Record<BulkRemarkEditableColumn, string
     const pastedRow = grid[r] || [];
     for (let c = 0; c < pastedRow.length; c += 1) {
       const targetColIndex = startColIndex + c;
-      if (targetColIndex >= EDITABLE_BULK_REMARK_COLUMNS.length) break;
-      const column = EDITABLE_BULK_REMARK_COLUMNS[targetColIndex];
+      if (targetColIndex >= columns.length) break;
+      const column = columns[targetColIndex];
       const pastedValue = pastedRow[c] ?? '';
       if (column === 'stage') {
-        const matched = matchRemarkStage(pastedValue);
+        const matched = matchRemarkStage(pastedValue, stageOptions);
         const cellKey = String(next[targetRow].taskId ?? targetRow);
         if (matched) {
           next[targetRow] = { ...next[targetRow], stage: matched };
@@ -136,6 +168,11 @@ export function applyPasteGrid<T extends Record<BulkRemarkEditableColumn, string
         } else if (pastedValue.trim()) {
           invalidStageCells.add(cellKey);
         }
+      } else if (extraSlugs.includes(column)) {
+        next[targetRow] = {
+          ...next[targetRow],
+          extra: { ...(next[targetRow].extra || {}), [column]: pastedValue },
+        };
       } else {
         next[targetRow] = { ...next[targetRow], [column]: pastedValue };
       }

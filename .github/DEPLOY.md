@@ -4,111 +4,135 @@ Two environments:
 
 | | Staging | Production |
 |---|---|---|
-| Host | Hostinger shared/cloud (empty today) | A2, already running with PM2 |
+| Host | Hostinger **VPS** (empty today) | A2, already running with PM2 |
 | Branch | `staging` (auto) or Actions → Run workflow | Actions → Run workflow → `production` |
-| Database | New Hostinger MySQL | Existing live DB — never overwrite `.env` |
-| Process | Hostinger Node.js app | `pm2` process `workflow-backend` |
+| Database | New MySQL/MariaDB **on the VPS** | Existing A2 phpMyAdmin MySQL — never overwritten |
+| Process | PM2 on the VPS (same idea as live) | `pm2` process `workflow-backend` |
 
 GitHub Actions only reads workflow files from `.github/workflows/deploy.yml` (not a `deploy.yml` in the repo root).
 
 ---
 
-## 0. Confirm Hostinger can run Node.js
+## Databases: A2 phpMyAdmin vs Hostinger VPS
 
-This app is Express + MySQL, not PHP. On Hostinger it needs **Business** or **Cloud** (Node.js websites). A plain Single/Premium PHP-only plan cannot run the backend.
-
-In hPanel check for one of:
-
-- **Websites → Add website → Node.js web app**
-- **Advanced → Node.js**
-
-If neither exists, upgrade the plan before continuing.
-
----
-
-## 1. Staging domain
-
-In hPanel attach the URL you want for staging (a real domain, a subdomain, or Hostinger’s temporary URL).
-
-Examples:
-
-- `https://workflow-staging.yourdomain.com`
-- `https://staging-xxxxx.hostingersite.com`
-
-Use that exact origin everywhere below (`APP_URL`, `API_URL`, `CORS_ORIGIN`). Production stays `https://workflow.bylinelms.com`.
-
----
-
-## 2. Enable SSH on Hostinger (needed for GitHub Actions)
-
-1. hPanel → **Advanced → SSH Access**
-2. Enable SSH
-3. Copy:
-   - **IP / hostname**
-   - **Username** (often `u123456789`)
-   - **Port** — shared/cloud is almost always **65002**, not 22
-4. Note the website path. Hostinger usually uses:
+The app does **not** share one database. Each environment reads only its own `backend/.env`.
 
 ```text
-/home/u123456789/domains/YOUR-STAGING-DOMAIN/public_html
+Live users  →  A2 MySQL (phpMyAdmin)     →  bylinelm_workflow_db
+Staging     →  Hostinger VPS MySQL       →  workflow_staging
+Laptop      →  local WAMP                →  workflow_db
 ```
 
-That folder is `DEPLOY_PATH`.
+phpMyAdmin is only a **browser UI** on A2. The Node app talks MySQL on port 3306. The VPS is the same protocol. You can install phpMyAdmin on the VPS later for a familiar UI; it is optional.
 
-On Windows, generate a deploy key (do this once):
+| | A2 (live) | Hostinger VPS (staging) |
+|---|---|---|
+| Engine | MySQL/MariaDB behind cPanel | You install MySQL or MariaDB yourself |
+| Admin UI | phpMyAdmin already there | `mysql` CLI first; phpMyAdmin optional |
+| `DB_HOST` | `localhost` on the A2 box | `127.0.0.1` on the VPS |
+| Name/user | cPanel prefix, e.g. `bylinelm_workflow_db` | names you choose, e.g. `workflow_staging` |
+| Data | real projects, users, tasks | empty until you bootstrap or import a dump |
+| CI/CD | never writes `.env`, never runs bootstrap | first deploy can create tables (`bootstrap_db`) |
+
+**What this does *not* do**
+
+- Staging deploys never connect to A2.
+- Production deploys never connect to the VPS.
+- Editing rows in Hostinger cannot change live data.
+- Schema changes must be applied **twice** (staging first, live when you promote).
+
+**Recommended:** keep staging empty (bootstrap schema only). Only dump A2 → VPS if you need a realistic data copy, and never point staging `DB_HOST` at the A2 server.
+
+---
+
+## 0. Hostinger VPS prerequisites
+
+SSH into the VPS as root (or a sudo user). Install Node 20, PM2, nginx (or Apache), and MySQL/MariaDB. Staging uses the same PM2 pattern as A2.
+
+Point the staging DNS A record at the VPS IP. Use that exact origin for `APP_URL`, `API_URL`, and `CORS_ORIGIN`. Production stays `https://workflow.bylinelms.com`.
+
+Suggested layout:
+
+```text
+/var/www/workflow-staging/          ← DEPLOY_PATH
+  index.html
+  assets/
+  dist/
+  backend/
+    server.js
+    .env
+```
+
+---
+
+## 1. SSH for GitHub Actions (VPS port 22)
+
+On Windows, generate a deploy key:
 
 ```powershell
 ssh-keygen -t ed25519 -C "github-actions-staging" -f $env:USERPROFILE\.ssh\workflow_staging_deploy -N ""
 ```
 
-Copy the **public** key into hPanel SSH Access (import/authorize). Keep the **private** key for GitHub. Never commit it.
+On the VPS, add the **public** key to the deploy user's `~/.ssh/authorized_keys`. Keep the **private** key for GitHub. Never commit it.
 
-Test from PowerShell:
+Test:
 
 ```powershell
-ssh -i $env:USERPROFILE\.ssh\workflow_staging_deploy -p 65002 u123456789@YOUR_SERVER_IP
+ssh -i $env:USERPROFILE\.ssh\workflow_staging_deploy -p 22 root@YOUR_VPS_IP
 ```
+
+Use a non-root deploy user in production-grade setups; root is fine only while the box is empty.
 
 ---
 
-## 3. Create a staging database (separate from live)
+## 2. Create the staging MySQL database on the VPS
 
-1. hPanel → **Databases → Management** (or MySQL Databases)
-2. Create database, for example `u123456789_workflow_stg`
-3. Create a user and a strong password
-4. Grant that user **ALL** privileges on that database only
-5. Host from the app server is `localhost`
-6. Save the exact `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+This is the Hostinger equivalent of A2 phpMyAdmin → New database. Do it over SSH, not against A2.
 
-Do **not** import the production dump unless you intentionally want a data copy. The first staging deploy can create an empty schema.
-
----
-
-## 4. Create the Node.js application on the empty hosting
-
-Files will land at `DEPLOY_PATH` like this:
-
-```text
-DEPLOY_PATH/
-  index.html          (frontend)
-  assets/
-  dist/               (same frontend, served by Express)
-  backend/
-    server.js         (startup file)
-    .env              (written from GitHub secret)
+```bash
+sudo apt update
+sudo apt install -y mariadb-server
+sudo mysql
 ```
 
-In hPanel Node.js / Node.js web app:
+MariaDB matches A2/cPanel more closely than MySQL 8. Inside the MySQL prompt:
 
-| Field | Value |
-|---|---|
-| Node.js version | 20 |
-| Application root | `DEPLOY_PATH/backend` |
-| Startup file | `server.js` |
-| Application URL | your staging domain |
-| Mode | production |
+```sql
+CREATE DATABASE workflow_staging CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'workflow_stg'@'localhost' IDENTIFIED BY 'choose-a-strong-password';
+GRANT ALL PRIVILEGES ON workflow_staging.* TO 'workflow_stg'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
 
-You can create the app **before** files exist; the first deploy fills the directory. After deploy, use **Restart / Rebuild** in hPanel if the GitHub health check fails.
+Leave MySQL bound to localhost. Do **not** open port 3306 on the public firewall.
+
+Optional: install phpMyAdmin on the VPS if you want the same UI as A2. The Node app does not need it.
+
+Fill `deploy/staging.backend.env.example` with:
+
+- `DB_HOST=127.0.0.1`
+- `DB_NAME=workflow_staging`
+- `DB_USER=workflow_stg`
+- `DB_PASSWORD=` the password you set above
+
+First GitHub deploy with **bootstrap_db = true** creates tables in this empty database. Do not import the A2 dump unless you want a data copy.
+
+### Optional: copy live data into staging (never the other way)
+
+On A2 (phpMyAdmin → Export, or SSH):
+
+```bash
+mysqldump -u bylinelm_workflow_db -p bylinelm_workflow_db > workflow_live.sql
+```
+
+Copy that file to the VPS, then:
+
+```bash
+mysql -u workflow_stg -p workflow_staging < workflow_live.sql
+```
+
+Skip `bootstrap_db` if you imported a dump (the tables already exist). Do this only when you need realistic staging data. Live is not updated by this import.
 
 ---
 
@@ -189,12 +213,13 @@ On **production**, optionally add a required reviewer so live cannot deploy with
 | Name | Value |
 |---|---|
 | `SSH_HOST` | Hostinger IP |
-| `SSH_PORT` | `65002` |
-| `SSH_USER` | `u123456789` |
+| `SSH_PORT` | `22` |
+| `SSH_USER` | `root` or your deploy user |
 | `SSH_KEY` | **private** key (`workflow_staging_deploy`) including `BEGIN` / `END` lines |
-| `DEPLOY_PATH` | `/home/u123456789/domains/YOUR-STAGING-DOMAIN/public_html` |
+| `DEPLOY_PATH` | `/var/www/workflow-staging` |
 | `BACKEND_ENV` | full contents of the filled staging `.env` |
-| `PROCESS_MANAGER` | `passenger` (optional; omit to auto-detect) |
+| `PROCESS_MANAGER` | `pm2` |
+| `PM2_APP_NAME` | `workflow-staging` |
 
 ### `production` environment — Variables
 
@@ -242,7 +267,7 @@ git push -u origin staging
    - target: `staging`
    - bootstrap_db: **true** (first time only)
 4. Watch the job. Failures at “Require staging secrets” mean a GitHub value is missing.
-5. If files uploaded but health check failed: hPanel → Node.js → **Restart**, then hit `https://YOUR-STAGING-DOMAIN/api/health`
+5. If files uploaded but health check failed: SSH in, run `pm2 list` and `pm2 logs workflow-staging`, then hit `https://YOUR-STAGING-DOMAIN/api/health`
 6. Log in with `admin@workflow.com` / `admin123` and change that password immediately
 
 Later staging deploys: leave `bootstrap_db` **false** (or just push to `staging`).
@@ -281,16 +306,16 @@ Production:
 ## Troubleshooting
 
 **SSH permission denied**  
-Wrong key, key not authorized in the panel, or wrong port (Hostinger 65002 vs A2 22/7822).
+Wrong key, key not in `authorized_keys`, or wrong port (VPS is **22**; A2 is often 22 or 7822).
 
-**npm not found on Hostinger**  
-The Node.js app exists in hPanel but CLI Node is not on PATH. Restart/Rebuild in the Node.js UI after rsync. You can also SSH and `source ~/nodevenv/.../bin/activate`.
+**npm / node not found on the VPS**  
+Install Node 20 and PM2 globally (`npm i -g pm2`), then re-run the workflow.
 
 **Health check 502 / timeout**  
-Node app not mapped to the domain, or it is still using the empty folder. Confirm Application root = `DEPLOY_PATH/backend` and startup file = `server.js`.
+nginx is not proxying to Node, or PM2 is down. Check `pm2 list` and the site vhost.
 
 **Database access denied**  
-`DB_NAME` / `DB_USER` / `DB_PASSWORD` in `BACKEND_ENV` must match hPanel exactly, including the `u123_...` prefix.
+`DB_NAME` / `DB_USER` / `DB_PASSWORD` in staging `BACKEND_ENV` must match the VPS `mysql` user you created. Do not paste A2 phpMyAdmin credentials here.
 
 **Frontend calls production API**  
 `vars.API_URL` on the staging environment must be `https://YOUR-STAGING-DOMAIN/api` (rebuild required; it is baked in at `npm run build`).

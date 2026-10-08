@@ -552,6 +552,11 @@ export const taskService = {
     return result;
   },
 
+  bulkUpdateNames: async (updates: Array<{ id: number; name: string }>): Promise<any> => {
+    const result = await apiService.post('/tasks/bulk-update-names', { updates });
+    return result;
+  },
+
   bulkApprove: async (taskIds: (string | number)[]): Promise<any> => {
     const result = await apiService.post('/tasks/bulk-approve', { taskIds });
     return result;
@@ -584,6 +589,7 @@ export const taskService = {
     fileLocation?: string;
     fileName?: string;
     remark: string;
+    extraFields?: Record<string, string>;
   }>): Promise<any> => {
     const result = await apiService.post('/tasks/bulk-remark', { updates });
     return result;
@@ -652,6 +658,7 @@ export const taskService = {
     is_private?: boolean;
     server_location?: string;
     file_name?: string;
+    extra_fields?: Record<string, string>;
   }): Promise<any> => {
     const result = await apiService.post(`/tasks/${taskId}/remarks`, data);
     return result.data ?? result;
@@ -742,6 +749,7 @@ export const teamTaskService = {
     is_private?: boolean;
     server_location?: string;
     file_name?: string;
+    extra_fields?: Record<string, string>;
   }): Promise<any> => {
     const result = await teamApiService.post(`/tasks/${taskId}/remarks`, data);
     return result.data ?? result;
@@ -1300,6 +1308,126 @@ export const authService = {
   teamLogin: (credentials: any) => apiService.post('/auth/team/login', credentials),
   refreshToken: (data: { refresh_token: string }) => apiService.post('/auth/admin/refresh', data),
   refreshTeamToken: (data: { refresh_token: string }) => apiService.post('/auth/team/refresh', data),
+};
+
+export interface RemarkOption {
+  id: number | null;
+  slug: string;
+  label: string;
+  status_effect: 'none' | 'in-progress' | 'under-review' | 'skipped';
+  is_system: boolean;
+  sort_order?: number;
+}
+
+export const remarkOptionsService = {
+  listMine: async (): Promise<RemarkOption[]> => {
+    const result = await apiService.get('/remark-options');
+    return result.data ?? result;
+  },
+
+  listAll: async (): Promise<RemarkOption[]> => {
+    const result = await apiService.get('/remark-options/all');
+    return result.data ?? result;
+  },
+
+  create: async (data: { label: string; status_effect?: RemarkOption['status_effect'] }): Promise<RemarkOption> => {
+    const result = await apiService.post('/remark-options', data);
+    return result.data ?? result;
+  },
+
+  update: async (id: number, data: { label?: string; status_effect?: RemarkOption['status_effect'] }): Promise<RemarkOption> => {
+    const result = await apiService.put(`/remark-options/${id}`, data);
+    return result.data ?? result;
+  },
+
+  remove: async (id: number): Promise<void> => {
+    await apiService.delete(`/remark-options/${id}`);
+  },
+
+  getMemberOptions: async (memberId: number): Promise<{
+    data: RemarkOption[];
+    assignedIds: number[];
+    usesDefault: boolean;
+  }> => {
+    const result = await apiService.get(`/remark-options/members/${memberId}`);
+    return {
+      data: result.data ?? [],
+      assignedIds: result.assignedIds ?? [],
+      usesDefault: !!result.usesDefault,
+    };
+  },
+
+  updateMemberOptions: async (memberId: number, optionIds: number[], reset = false): Promise<{
+    data: RemarkOption[];
+    assignedIds: number[];
+    usesDefault: boolean;
+  }> => {
+    const result = await apiService.put(`/remark-options/members/${memberId}`, { optionIds, reset });
+    return {
+      data: result.data ?? [],
+      assignedIds: result.assignedIds ?? [],
+      usesDefault: !!result.usesDefault,
+    };
+  },
+};
+
+export interface RemarkInputField {
+  id: number | null;
+  slug: string;
+  label: string;
+  is_required: boolean;
+  sort_order?: number;
+}
+
+export const remarkFieldsService = {
+  listMine: async (): Promise<{ data: RemarkInputField[]; enforceRequired: boolean }> => {
+    const result = await apiService.get('/remark-options/fields');
+    return {
+      data: result.data ?? [],
+      enforceRequired: !!result.enforceRequired,
+    };
+  },
+
+  listAll: async (): Promise<RemarkInputField[]> => {
+    const result = await apiService.get('/remark-options/fields/all');
+    return result.data ?? result;
+  },
+
+  create: async (data: { label: string; is_required?: boolean }): Promise<RemarkInputField> => {
+    const result = await apiService.post('/remark-options/fields', data);
+    return result.data ?? result;
+  },
+
+  update: async (id: number, data: { label?: string; is_required?: boolean }): Promise<RemarkInputField> => {
+    const result = await apiService.put(`/remark-options/fields/${id}`, data);
+    return result.data ?? result;
+  },
+
+  remove: async (id: number): Promise<void> => {
+    await apiService.delete(`/remark-options/fields/${id}`);
+  },
+
+  getMemberFields: async (memberId: number): Promise<{
+    data: RemarkInputField[];
+    assignedIds: number[];
+  }> => {
+    const result = await apiService.get(`/remark-options/members/${memberId}/fields`);
+    return {
+      data: result.data ?? [],
+      assignedIds: result.assignedIds ?? [],
+    };
+  },
+
+  updateMemberFields: async (memberId: number, fieldIds: number[]): Promise<{
+    data: RemarkInputField[];
+    assignedIds: number[];
+  }> => {
+    const result = await apiService.put(`/remark-options/members/${memberId}/fields`, { fieldIds });
+    return {
+      data: result.data ?? [],
+      assignedIds: result.assignedIds ?? [],
+    };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

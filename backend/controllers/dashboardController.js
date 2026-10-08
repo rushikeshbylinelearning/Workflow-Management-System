@@ -1,4 +1,5 @@
 const db = require('../db');
+const { getTaskScopeCondition, getAccessibleTeamMemberIds } = require('../utils/accessPermissions');
 
 // Helper: format seconds to "Xh Ym"
 const formatDuration = (seconds) => {
@@ -17,8 +18,16 @@ const formatDuration = (seconds) => {
  */
 const getSummary = async (req, res) => {
   try {
-    // Add logging to help diagnose count issues
     console.log('[Dashboard] getSummary called at', new Date().toISOString());
+    const scopeCondition = getTaskScopeCondition(req.user, 't');
+    const taskWhere = scopeCondition.sql ? `WHERE ${scopeCondition.sql}` : '';
+    const memberIds = await getAccessibleTeamMemberIds(req.user);
+    const memberFilter = memberIds
+      ? `AND id IN (${memberIds.map(() => '?').join(',')})`
+      : '';
+    const flagMemberFilter = memberIds
+      ? `WHERE team_member_id IN (${memberIds.map(() => '?').join(',')})`
+      : '';
     
     // Projects overview
     const projectStats = await db.queryFirst(`
@@ -44,8 +53,9 @@ const getSummary = async (req, res) => {
         SUM(status = 'skipped')      AS skipped,
         SUM(end_date < CURDATE() AND status NOT IN ('completed','skipped','under-review')) AS overdue,
         ROUND(AVG(progress), 1) AS avg_progress
-      FROM tasks
-    `);
+      FROM tasks t
+      ${taskWhere}
+    `, scopeCondition.params);
 
     // Count tasks with no assignees (LEFT JOIN + NULL check)
     const unassignedStats = await db.queryFirst(`
@@ -53,7 +63,8 @@ const getSummary = async (req, res) => {
       FROM tasks t
       LEFT JOIN task_assignees ta ON t.id = ta.task_id
       WHERE ta.task_id IS NULL
-    `);
+      ${scopeCondition.sql ? `AND ${scopeCondition.sql}` : ''}
+    `, scopeCondition.params);
     
     console.log('[Dashboard] Task count returned:', taskStats.total);
 
@@ -65,7 +76,8 @@ const getSummary = async (req, res) => {
         SUM(role = 'project_manager') AS project_managers,
         SUM(role = 'employee') AS employees
       FROM team_members
-    `);
+      WHERE 1=1 ${memberFilter}
+    `, memberIds || []);
 
     // Performance flags summary
     const flagStats = await db.queryFirst(`
@@ -76,7 +88,8 @@ const getSummary = async (req, res) => {
         SUM(type = 'yellow') AS yellow,
         SUM(type = 'green')  AS green
       FROM performance_flags
-    `);
+      ${flagMemberFilter}
+    `, memberIds || []);
 
     // Total time tracked (all tasks)
     const timeStats = await db.queryFirst(`

@@ -3,9 +3,12 @@ const remarkHistory = require('../services/taskRemarkHistoryService');
 const reworkService = require('../services/taskReworkService');
 const resubmissionDeadline = require('../services/resubmissionDeadlineService');
 const { assertTaskAccess, assertCanManageTasks, canManageTasks } = require('../utils/taskAccess');
+const { getTaskScopeCondition, getTaskListScope } = require('../utils/accessPermissions');
 const { ensureTeamMembersOnProject } = require('../utils/projectMembership');
 const { emitProjectTaskUpdate } = require('../utils/emitProjectTaskUpdate');
 const taskSummaryCache = require('../services/taskSummaryCache');
+const remarkOptions = require('../services/remarkOptionsService');
+const remarkFields = require('../services/remarkFieldsService');
 const {
   extractHierarchyNamesFromRow,
   loadHierarchyMaps,
@@ -294,12 +297,12 @@ const getTasks = async (req, res) => {
       all = false
     } = req.query;
 
-    // Team members (employees) can only see tasks assigned to them
-    const assignee_id = req.user?.type === 'team'
+    const taskScope = getTaskListScope(req.user);
+    const assignee_id = taskScope.type === 'own'
       ? String(req.user.id)
       : req.query.assignee_id;
 
-    const assigneeIdList = req.user?.type === 'team'
+    const assigneeIdList = taskScope.type === 'own'
       ? []
       : assigneeIdIn
         ? assigneeIdIn.split(',').map((s) => s.trim()).filter(Boolean)
@@ -308,14 +311,34 @@ const getTasks = async (req, res) => {
       ? priorityIn.split(',').map((s) => s.trim()).filter(Boolean)
       : [];
 
-    const teamIdFilter = req.user?.type === 'team' ? undefined : team_id;
+    let teamIdFilter = team_id;
+    if (taskScope.type === 'own') {
+      teamIdFilter = undefined;
+    } else if (taskScope.type === 'teams' && (!team_id || team_id === 'all')) {
+      teamIdFilter = undefined;
+    } else if (taskScope.type === 'teams' && team_id && team_id !== 'all') {
+      const allowed = new Set(taskScope.teamIds.map(Number));
+      teamIdFilter = allowed.has(Number(team_id)) ? team_id : '__none__';
+    }
 
     const needsAssigneeJoin = sort === 'assignees' || assignee_id || assigneeIdList.length > 0;
     const { conditions, params } = buildTaskFilters({
       project_id, status, priority, stage_id, grade_id, book_id, unit_id, lesson_id,
       search, assignee_id, assigneeIdIn: assigneeIdList, priorityIn: priorityInList,
-      dateRangeStart, dateRangeEnd, team_id: teamIdFilter
+      dateRangeStart, dateRangeEnd, team_id: teamIdFilter === '__none__' ? undefined : teamIdFilter
     });
+
+    if (teamIdFilter === '__none__') {
+      conditions.push('1 = 0');
+    }
+
+    if (taskScope.type !== 'own') {
+      const scopeCondition = getTaskScopeCondition(req.user, 't');
+      if (scopeCondition.sql) {
+        conditions.push(scopeCondition.sql);
+        params.push(...scopeCondition.params);
+      }
+    }
 
     // Build base joins
     let joinClause = 'FROM tasks t LEFT JOIN projects p ON t.project_id = p.id LEFT JOIN category_stages cs ON t.category_stage_id = cs.id';
@@ -1119,6 +1142,7 @@ async function applyTaskRemark({
   is_private = false,
   server_location,
   file_name,
+  extra_fields,
   notifyContext = {},
   enforceTeamFileFields = true,
   skipAssigneeCheck = false,
@@ -1158,12 +1182,26 @@ async function applyTaskRemark({
   let insertId;
   const locationValue = server_location === undefined ? undefined : (server_location || null);
   const fileNameValue = file_name === undefined ? undefined : (file_name || null);
+  const extraNormalized = await remarkFields.normalizeExtraFieldValues(extra_fields, user);
+  const extraValues = extraNormalized.values;
+  const extraJson = Object.keys(extraValues).length > 0 ? JSON.stringify(extraValues) : null;
 
   await remarkHistory.runInTransaction(async (conn) => {
-    const [insertResult] = await conn.execute(
-      `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, added_by, added_by_type, formattedRemarkDate, remark, type || null, is_private || false, locationValue ?? null, fileNameValue ?? null]
-    );
+    let insertResult;
+    try {
+      const [result] = await conn.execute(
+        `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name, extra_fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, added_by, added_by_type, formattedRemarkDate, remark, type || null, is_private || false, locationValue ?? null, fileNameValue ?? null, extraJson]
+      );
+      insertResult = result;
+    } catch (insertErr) {
+      if (!remarkFields.isMissingColumn(insertErr)) throw insertErr;
+      const [result] = await conn.execute(
+        `INSERT INTO task_remarks (task_id, added_by, added_by_type, remark_date, remark, remark_type, is_private, server_location, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, added_by, added_by_type, formattedRemarkDate, remark, type || null, is_private || false, locationValue ?? null, fileNameValue ?? null]
+      );
+      insertResult = result;
+    }
     insertId = insertResult.insertId;
 
     // Built-in + custom options use status_effect:
@@ -1263,9 +1301,16 @@ async function applyTaskRemark({
         serverLink: notifyContext.serverLocation || notifyContext.serverLink || locationValue || 'N/A',
         remark: notifyContext.remarkContent || remark || 'N/A',
         fileName: notifyContext.fileName || fileNameValue || 'N/A',
+        extraFields: remarkFields.extraFieldsToList(extraValues),
       };
+      const extraTeamsText = remarkFields.formatExtraFieldsForTeams(extraValues);
+      if (extraTeamsText && teamsBase.remark && teamsBase.remark !== 'N/A') {
+        teamsBase.remark = `${teamsBase.remark}\n\n${extraTeamsText}`;
+      } else if (extraTeamsText) {
+        teamsBase.remark = extraTeamsText;
+      }
 
-      const isSubmissionRemark = type === 'complete' || type === 'skipped';
+      const isSubmissionRemark = statusEffect === 'under-review' || statusEffect === 'skipped';
 
       if (isSubmissionRemark || newStatus !== previousStatus) {
         notifyAssigneeTeams(user, id, {
@@ -1276,7 +1321,7 @@ async function applyTaskRemark({
       } else {
         notifyAssigneeTeams(user, id, {
           ...teamsBase,
-          status: notifyContext.remarkType || notifyContext.status || type || 'N/A',
+          status: notifyContext.stageLabel || notifyContext.remarkType || notifyContext.status || option.label || type || 'N/A',
           type: 'remark',
         });
       }
@@ -1293,13 +1338,14 @@ async function applyTaskRemark({
     previous_status: previousStatus,
     status: newStatus,
     progress: calculateTaskProgress(newStatus) ?? 0,
+    extra_fields: extraValues,
   };
 }
 
 const addTaskRemark = async (req, res) => {
   try {
     const { id } = req.params;
-    const { remark, remark_date, remark_type = 'general', is_private = false, server_location, file_name } = req.body;
+    const { remark, remark_date, remark_type = 'general', is_private = false, server_location, file_name, extra_fields, extraFields } = req.body;
 
     const data = await applyTaskRemark({
       taskId: id,
@@ -1310,6 +1356,7 @@ const addTaskRemark = async (req, res) => {
       is_private,
       server_location,
       file_name,
+      extra_fields: extra_fields || extraFields,
       notifyContext: req.body || {},
       enforceTeamFileFields: true,
     });
@@ -1505,29 +1552,32 @@ const bulkAddTaskRemarks = async (req, res) => {
         continue;
       }
 
-      const stage = String(row.stage || row.remark_type || 'general').trim().toLowerCase();
-      const remarkType = VALID_REMARK_TYPES.has(stage) ? stage : null;
-      if (!remarkType) {
-        results.push({ taskId, success: false, error: 'Invalid stage' });
+      const stage = String(row.stage || row.remark_type || 'general').trim().toLowerCase() || 'general';
+      const option = await remarkOptions.resolveOptionForUser(stage, req.user);
+      if (!option) {
+        results.push({ taskId, success: false, error: 'Invalid or unavailable stage' });
         continue;
       }
 
       const fileLocation = row.fileLocation ?? row.server_location ?? '';
       const fileName = row.fileName ?? row.file_name ?? '';
+      const extraFieldsPayload = row.extraFields ?? row.extra_fields ?? {};
 
       try {
         const data = await applyTaskRemark({
           taskId,
           user: req.user,
           remark,
-          remark_type: remarkType,
+          remark_type: option.slug,
           server_location: fileLocation,
           file_name: fileName,
+          extra_fields: extraFieldsPayload,
           notifyContext: {
             serverLocation: fileLocation,
             fileName,
             remarkContent: remark,
-            remarkType: remarkType,
+            remarkType: option.slug,
+            stageLabel: option.label,
           },
           enforceTeamFileFields: false,
           skipAssigneeCheck: manager,
@@ -1536,10 +1586,12 @@ const bulkAddTaskRemarks = async (req, res) => {
         results.push({ taskId, success: true, status: data.status, progress: data.progress });
         succeeded.push({
           taskId,
-          stage: remarkType,
+          stage: option.slug,
+          stageLabel: option.label,
           fileLocation,
           fileName,
           remark,
+          extraFields: data.extra_fields || {},
         });
       } catch (rowError) {
         results.push({
@@ -1657,7 +1709,7 @@ const getNotifications = async (req, res) => {
         WHERE te.status = 'pending' ORDER BY te.created_at DESC
       `),
       db.query(`
-        SELECT tr.id, tr.task_id, tr.added_by, tr.added_by_type, tr.remark_date, tr.remark, tr.remark_type, tr.is_private, tr.server_location, tr.file_name, tr.created_at,
+        SELECT tr.id, tr.task_id, tr.added_by, tr.added_by_type, tr.remark_date, tr.remark, tr.remark_type, tr.is_private, tr.server_location, tr.file_name, tr.extra_fields, tr.created_at,
           t.name as task_name, t.status as task_status, p.name as project_name,
           CASE WHEN tr.added_by_type = 'team' THEN tm.name WHEN tr.added_by_type = 'admin' THEN au.name ELSE 'Unknown User' END as user_name
         FROM task_remarks tr
@@ -1908,7 +1960,7 @@ const bulkUploadTasks = async (req, res) => {
     return res.status(400).json({ success: false, error: 'Request body must be a non-empty array of tasks' });
   }
 
-  if (tasks.length > 500) {
+  if (tasks.length > 1000) {
     return res.status(400).json({ success: false, error: 'Maximum 500 tasks allowed per upload' });
   }
 
@@ -2179,8 +2231,8 @@ const bulkTagTasks = async (req, res) => {
     return res.status(400).json({ success: false, error: 'Request body must be a non-empty array of rows' });
   }
 
-  if (rows.length > 500) {
-    return res.status(400).json({ success: false, error: 'Maximum 500 rows allowed per upload' });
+  if (rows.length > 1000) {
+    return res.status(400).json({ success: false, error: 'Maximum 1000 rows allowed per upload' });
   }
 
   const pool = db.getPool();
@@ -3360,6 +3412,126 @@ const bulkApproveTasks = async (req, res) => {
   }
 };
 
+// POST /api/tasks/bulk-update-names
+// Body: { updates: [{ id, name }, ...] }
+const bulkUpdateTaskNames = async (req, res) => {
+  try {
+    assertCanManageTasks(req.user);
+    const { updates } = req.body;
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'updates array is required' },
+      });
+    }
+
+    if (updates.length > 500) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'Maximum 500 tasks can be updated at once' },
+      });
+    }
+
+    // Validate all updates
+    const validUpdates = [];
+    for (let i = 0; i < updates.length; i++) {
+      const update = updates[i];
+      const id = parseInt(update.id, 10);
+      const name = String(update.name || '').trim();
+
+      if (isNaN(id) || id <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_INPUT', message: `Invalid task ID at index ${i}` },
+        });
+      }
+
+      if (!name) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_INPUT', message: `Task name cannot be empty at index ${i}` },
+        });
+      }
+
+      if (name.length > 255) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_INPUT', message: `Task name too long at index ${i} (max 255 characters)` },
+        });
+      }
+
+      validUpdates.push({ id, name });
+    }
+
+    // Check which tasks exist
+    const ids = validUpdates.map((u) => u.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const existing = await db.query(
+      `SELECT id, name, project_id FROM tasks WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    if (existing.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) updated (tasks may have been deleted)',
+        updatedCount: 0,
+      });
+    }
+
+    const existingIds = new Set(existing.map((task) => task.id));
+    const toUpdate = validUpdates.filter((u) => existingIds.has(u.id));
+
+    if (toUpdate.length === 0) {
+      return res.json({
+        success: true,
+        message: '0 task(s) updated',
+        updatedCount: 0,
+      });
+    }
+
+    // Perform bulk update using transaction
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      for (const update of toUpdate) {
+        await conn.query(
+          'UPDATE tasks SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [update.name, update.id]
+        );
+      }
+
+      await conn.commit();
+    } catch (txError) {
+      await conn.rollback();
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    // Invalidate cache and notify
+    const projectIds = [...new Set(existing.map((task) => task.project_id).filter(Boolean))];
+    projectIds.forEach((projectId) => emitProjectTaskUpdate(projectId, null, 'updated'));
+    taskSummaryCache.invalidateAll();
+
+    res.json({
+      success: true,
+      message: `${toUpdate.length} task name(s) updated`,
+      updatedCount: toUpdate.length,
+      affectedProjects: projectIds.length,
+    });
+  } catch (error) {
+    if (sendBulkActionError(res, error)) return;
+    console.error('Bulk update task names error:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'DATABASE_ERROR', message: 'Failed to update task names' },
+    });
+  }
+};
+
 module.exports = {
   getTasks, getTask, createTask, updateTask, deleteTask, bulkDeleteTasks,
   testStageFilter, getBulkCreatePreview, bulkCreateTasks,
@@ -3367,5 +3539,5 @@ module.exports = {
   addTaskRemark, getBulkRemarkDefaults, bulkAddTaskRemarks, getTaskRemarks, getTaskRemarksHistory, deleteTaskRemark,
   getNotifications, getTeamNotifications, reviewTaskCompletion,
   bulkUploadTasks, bulkTagTasks, bulkUpdateTasks, bulkAssignTasks, bulkUpdateTaskStatus, bulkReassignTasks,
-  bulkUpdateTaskDates, bulkApproveTasks,
+  bulkUpdateTaskDates, bulkApproveTasks, bulkUpdateTaskNames,
 };

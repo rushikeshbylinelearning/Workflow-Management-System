@@ -7,13 +7,13 @@ import { taskService } from '../services/apiService';
 import {
   applyPasteGrid,
   BULK_REMARK_STAGE_OPTIONS,
-  EDITABLE_BULK_REMARK_COLUMNS,
   formatTaskTags,
   MAX_BULK_ROWS_ADMIN,
   parseClipboardGrid,
   statusToRemarkStage,
-  type BulkRemarkEditableColumn,
 } from '../utils/bulkRemark';
+import { useRemarkOptions } from '../hooks/useRemarkOptions';
+import { missingRequiredRemarkFields, useRemarkFields } from '../hooks/useRemarkFields';
 
 interface BulkRemarkModalProps {
   isOpen: boolean;
@@ -32,6 +32,7 @@ interface BulkRemarkRow {
   fileLocation: string;
   fileName: string;
   remark: string;
+  extra: Record<string, string>;
   stageInvalid?: boolean;
   error?: string | null;
 }
@@ -50,6 +51,7 @@ function toRow(task: any, fallback?: any): BulkRemarkRow {
     fileLocation: merged.fileLocation || merged.server_location || '',
     fileName: merged.fileName || '',
     remark: '',
+    extra: {},
     stageInvalid: false,
     error: null,
   };
@@ -68,6 +70,10 @@ export function BulkRemarkModal({
   const [busy, setBusy] = useState(false);
   const [retryingId, setRetryingId] = useState<number | null>(null);
   const { showToast } = useToast();
+  const { options: stageOptions } = useRemarkOptions();
+  const { fields: extraFieldDefs, enforceRequired } = useRemarkFields();
+  const extraSlugs = extraFieldDefs.map((field) => field.slug);
+  const stageCatalog = stageOptions.length > 0 ? stageOptions : BULK_REMARK_STAGE_OPTIONS;
   const successCountRef = useRef(0);
   const selectedTasksRef = useRef(selectedTasks);
   selectedTasksRef.current = selectedTasks;
@@ -141,7 +147,11 @@ export function BulkRemarkModal({
     () => rows.filter((row) => !row.remark.trim()).length,
     [rows]
   );
-  const canSubmit = rows.length > 0 && missingRemarkCount === 0 && !busy && !loading;
+  const missingExtraCount = useMemo(
+    () => rows.filter((row) => missingRequiredRemarkFields(extraFieldDefs, row.extra || {}, enforceRequired).length > 0).length,
+    [rows, extraFieldDefs, enforceRequired]
+  );
+  const canSubmit = rows.length > 0 && missingRemarkCount === 0 && missingExtraCount === 0 && !busy && !loading;
 
   const updateRow = (taskId: number, patch: Partial<BulkRemarkRow>) => {
     setRows((prev) => prev.map((row) => (
@@ -152,7 +162,7 @@ export function BulkRemarkModal({
   const handlePaste = (
     event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
     rowIndex: number,
-    column: BulkRemarkEditableColumn
+    column: string
   ) => {
     const text = event.clipboardData.getData('text/plain');
     if (!text || (!text.includes('\t') && !text.includes('\n'))) return;
@@ -163,7 +173,9 @@ export function BulkRemarkModal({
         prev,
         rowIndex,
         column,
-        parseClipboardGrid(text)
+        parseClipboardGrid(text),
+        stageCatalog,
+        extraSlugs
       );
       return next.map((row) => {
         const key = String(row.taskId);
@@ -181,6 +193,7 @@ export function BulkRemarkModal({
       fileLocation: row.fileLocation,
       fileName: row.fileName,
       remark: row.remark.trim(),
+      extraFields: row.extra || {},
     }));
     return taskService.bulkRemark(payload);
   };
@@ -258,7 +271,9 @@ export function BulkRemarkModal({
       subtitle={
         <span className="text-sm text-gray-500">
           {rows.length > 0 ? `${rows.length} task${rows.length !== 1 ? 's' : ''}` : `${Math.min(taskIds.length, MAX_BULK_ROWS_ADMIN)} selected`}
-          {' · '}Paste Stage, File Location, File Name, Remark from Excel
+          {' · '}Paste Stage, File Location, File Name
+          {extraFieldDefs.length > 0 ? `, ${extraFieldDefs.map((field) => field.label).join(', ')}` : ''}
+          {', Remark from Excel'}
         </span>
       }
       bodyClassName="px-5 py-4"
@@ -276,7 +291,11 @@ export function BulkRemarkModal({
         <div className="space-y-4">
           <p className="text-sm text-gray-600">
             Tags, task name, and description are locked. Stage uses the same options as Add Remark
-            and can change Status/Progress. Only Remark is required.
+            and can change Status/Progress. Only Remark is required
+            {enforceRequired && extraFieldDefs.some((field) => field.is_required)
+              ? ', plus any extra required fields assigned to you'
+              : ''}
+            . Extra fields assigned in Access Management appear as additional columns and are included in Teams updates.
           </p>
 
           {missingRemarkCount > 0 && (
@@ -288,20 +307,40 @@ export function BulkRemarkModal({
               </span>
             </div>
           )}
+          {missingExtraCount > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>
+                Fill every required extra field before submitting.
+                {' '}{missingExtraCount} row{missingExtraCount !== 1 ? 's' : ''} still missing required extra data.
+              </span>
+            </div>
+          )}
 
           <div className="overflow-x-auto overflow-y-auto max-h-[55vh] border border-gray-200 rounded-lg">
             <table className="min-w-full text-sm">
               <thead className="bg-gray-50 sticky top-0 z-10">
                 <tr>
-                  {['Tags', 'Task Name', 'Description', 'Stage', 'File Location', 'File Name', 'Remark'].map((header) => (
+                  {['Tags', 'Task Name', 'Description', 'Stage', 'File Location', 'File Name'].map((header) => (
                     <th
                       key={header}
                       className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide whitespace-nowrap"
                     >
                       {header}
-                      {header === 'Remark' ? ' *' : ''}
                     </th>
                   ))}
+                  {extraFieldDefs.map((field) => (
+                    <th
+                      key={field.slug}
+                      className="px-3 py-2 text-left text-xs font-semibold text-indigo-700 uppercase tracking-wide whitespace-nowrap"
+                    >
+                      {field.label}
+                      {enforceRequired && field.is_required ? ' *' : ''}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide whitespace-nowrap">
+                    Remark *
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -334,10 +373,15 @@ export function BulkRemarkModal({
                           <select
                             value={row.stage}
                             onChange={(e) => updateRow(row.taskId, { stage: e.target.value, stageInvalid: false, error: null })}
-                            onPaste={(e) => handlePaste(e, rowIndex, EDITABLE_BULK_REMARK_COLUMNS[0])}
+                            onPaste={(e) => handlePaste(e, rowIndex, 'stage')}
                             className={INPUT_CLASS}
                           >
-                            {BULK_REMARK_STAGE_OPTIONS.map((option) => (
+                            {([
+                              ...stageCatalog,
+                              ...(stageCatalog.some((option) => option.value === row.stage)
+                                ? []
+                                : [{ value: row.stage, label: row.stage }]),
+                            ]).map((option) => (
                               <option key={option.value} value={option.value}>{option.label}</option>
                             ))}
                           </select>
@@ -353,7 +397,7 @@ export function BulkRemarkModal({
                           type="text"
                           value={row.fileLocation}
                           onChange={(e) => updateRow(row.taskId, { fileLocation: e.target.value, error: null })}
-                          onPaste={(e) => handlePaste(e, rowIndex, EDITABLE_BULK_REMARK_COLUMNS[1])}
+                          onPaste={(e) => handlePaste(e, rowIndex, 'fileLocation')}
                           className={INPUT_CLASS}
                           placeholder="Server location"
                         />
@@ -363,16 +407,34 @@ export function BulkRemarkModal({
                           type="text"
                           value={row.fileName}
                           onChange={(e) => updateRow(row.taskId, { fileName: e.target.value, error: null })}
-                          onPaste={(e) => handlePaste(e, rowIndex, EDITABLE_BULK_REMARK_COLUMNS[2])}
+                          onPaste={(e) => handlePaste(e, rowIndex, 'fileName')}
                           className={INPUT_CLASS}
                           placeholder="File name"
                         />
                       </td>
+                      {extraFieldDefs.map((field) => {
+                        const extraMissing = enforceRequired && field.is_required && !String(row.extra?.[field.slug] || '').trim();
+                        return (
+                          <td key={field.slug} className="px-3 py-2 align-top min-w-[9rem]">
+                            <input
+                              type="text"
+                              value={row.extra?.[field.slug] || ''}
+                              onChange={(e) => updateRow(row.taskId, {
+                                extra: { ...(row.extra || {}), [field.slug]: e.target.value },
+                                error: null,
+                              })}
+                              onPaste={(e) => handlePaste(e, rowIndex, field.slug)}
+                              className={`${INPUT_CLASS} ${extraMissing ? 'border-amber-400' : ''}`}
+                              placeholder={field.label}
+                            />
+                          </td>
+                        );
+                      })}
                       <td className="px-3 py-2 align-top min-w-[12rem]">
                         <textarea
                           value={row.remark}
                           onChange={(e) => updateRow(row.taskId, { remark: e.target.value, error: null })}
-                          onPaste={(e) => handlePaste(e, rowIndex, EDITABLE_BULK_REMARK_COLUMNS[3])}
+                          onPaste={(e) => handlePaste(e, rowIndex, 'remark')}
                           className={`${INPUT_CLASS} min-h-[2.5rem] ${missingRemark ? 'border-amber-400' : ''}`}
                           rows={2}
                           placeholder="Required remark"

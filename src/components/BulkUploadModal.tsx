@@ -42,7 +42,7 @@ interface RowError {
 
 const VALID_STATUSES = ['not-started', 'in-progress', 'under-review', 'completed', 'blocked', 'skipped'];
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
-const MAX_ROWS = 500;
+const MAX_ROWS = 1000;
 const MAX_FILE_SIZE_MB = 2;
 
 const STATUS_DISPLAY: Record<string, string> = {

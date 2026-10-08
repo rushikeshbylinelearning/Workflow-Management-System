@@ -7,6 +7,7 @@ const {
   updateMemberRole,
   updateMemberPermissions,
   getMyPermissions,
+  getAccessTeams,
 } = require('../controllers/accessController');
 
 // ============================================================
@@ -15,6 +16,9 @@ const {
 
 // Get all available permission keys and labels
 router.get('/permissions-definitions', requireAdminAuth, getPermissionDefinitions);
+
+// Get all teams for access management UI
+router.get('/teams', requireAdminAuth, getAccessTeams);
 
 // Get all team members with their current roles & permissions
 router.get('/members', requireAdminAuth, getMembersWithPermissions);

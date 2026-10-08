@@ -2,6 +2,7 @@ const db = require('../db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const reworkService = require('../services/taskReworkService');
+const { getAccessibleTeamMemberIds, getTaskListScope } = require('../utils/accessPermissions');
 
 // Team member authentication
 const authenticateTeamMember = async (req, res) => {
@@ -554,9 +555,14 @@ const getAllTeamMembers = async (req, res) => {
       return formattedMember;
     });
 
+    const memberIds = await getAccessibleTeamMemberIds(req.user);
+    const scopedMembers = memberIds
+      ? formattedTeamMembers.filter((member) => memberIds.includes(Number(member.id)))
+      : formattedTeamMembers;
+
     res.json({
       success: true,
-      data: formattedTeamMembers
+      data: scopedMembers
     });
   } catch (error) {
     console.error('❌ Error fetching team members:', error);
@@ -1013,9 +1019,14 @@ const getAllTeams = async (req, res) => {
       team_lead_name: team.team_lead_name || 'Unassigned'
     }));
 
+    const scope = getTaskListScope(req.user);
+    const visibleTeams = scope.type === 'teams'
+      ? formattedTeams.filter((team) => scope.teamIds.includes(Number(team.id)))
+      : formattedTeams;
+
     res.json({
       success: true,
-      data: formattedTeams
+      data: visibleTeams
     });
   } catch (error) {
     console.error('Error fetching teams:', error);
