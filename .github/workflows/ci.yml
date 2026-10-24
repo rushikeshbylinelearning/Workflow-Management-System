@@ -61,3 +61,127 @@ jobs:
 
       - name: Syntax-check server entry
         run: node --check server.js
+
+  # Live site: A2 Hosting + PM2 (workflow.bylinelms.com)
+  # Uses GitHub Environment "production" secrets you already configured.
+  deploy-production:
+    name: Deploy production (A2 / PM2)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ secrets.APP_URL || vars.APP_URL }}
+    env:
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      # Prefer Environment secrets (what you added); Variables also work
+      APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
+      API_URL: ${{ secrets.API_URL || vars.API_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend for production (A2)
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}
+          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || vars.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
+          VITE_ENABLE_RESUBMISSION_DEADLINE: ${{ vars.VITE_ENABLE_RESUBMISSION_DEADLINE || 'true' }}
+          VITE_ENABLE_REWORK_HIGHLIGHT: ${{ vars.VITE_ENABLE_REWORK_HIGHLIGHT || 'true' }}
+
+      - name: Require production secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
+          API_URL: ${{ secrets.API_URL || vars.API_URL }}
+        run: |
+          missing=0
+          for name in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH APP_URL API_URL; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then
+              echo "::error::$name is not set on the production GitHub Environment"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          PORT="${SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "SSH_PORT=$PORT" >> "$GITHUB_ENV"
+
+      - name: Upload frontend + backend to A2 (keep live .env / uploads)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ env.SSH_PORT }}
+        run: |
+          SSH="ssh -i ~/.ssh/deploy_key -p ${SSH_PORT} -o StrictHostKeyChecking=accept-new"
+          $SSH "${SSH_USER}@${SSH_HOST}" "mkdir -p '${DEPLOY_PATH}/backend' '${DEPLOY_PATH}/dist' '${DEPLOY_PATH}/backend/logs' '${DEPLOY_PATH}/backend/uploads'"
+
+          rsync -az --delete \
+            --exclude node_modules \
+            --exclude .env \
+            --exclude logs \
+            --exclude uploads \
+            -e "$SSH" \
+            backend/ "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/backend/"
+
+          rsync -az --delete \
+            -e "$SSH" \
+            dist/ "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/dist/"
+
+          rsync -az \
+            -e "$SSH" \
+            dist/ "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/"
+
+          rsync -az \
+            -e "$SSH" \
+            deploy/htaccess.production "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/.htaccess"
+
+          rsync -az \
+            -e "$SSH" \
+            deploy/remote-after-deploy.sh "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/backend/remote-after-deploy.sh"
+
+      - name: Install dependencies and reload PM2 on A2
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ env.SSH_PORT }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT}" -o StrictHostKeyChecking=accept-new \
+            "${SSH_USER}@${SSH_HOST}" \
+            "PROCESS_MANAGER='${{ secrets.PROCESS_MANAGER || 'pm2' }}' \
+             PM2_APP_NAME='${{ secrets.PM2_APP_NAME || 'workflow-backend' }}' \
+             BOOTSTRAP_DB='false' \
+             bash '${DEPLOY_PATH}/backend/remote-after-deploy.sh' '${DEPLOY_PATH}'"
+
+      - name: Health check
+        run: |
+          API_URL="${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}"
+          echo "Checking ${API_URL}/health"
+          curl -fsS "${API_URL}/health"
+          echo
+          echo "Production (A2) health check passed"

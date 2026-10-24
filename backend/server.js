@@ -188,6 +188,11 @@ app.use('/api/v1', powerbiRoutes);
 
 app.use('/api/admin/powerbi-keys', require('./routes/powerbiKeyAdmin'));
 
+// Reporting API (Spec v2.0) — feature-flagged; additive only
+const { createRouter: createReportingRouter } = require('./reporting-api');
+app.use('/api', createReportingRouter());
+app.use('/api/admin/reporting', require('./routes/reportingKeyAdmin'));
+
 app.use('/api/admin', require('./routes/teamsAdmin'));
 
 const adminAuditRoutes = require('./routes/adminAudit');
