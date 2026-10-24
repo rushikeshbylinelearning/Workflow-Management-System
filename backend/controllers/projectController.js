@@ -45,6 +45,44 @@ const calculateProjectUserCount = async (projectId) => {
   }
 };
 
+// One grouped query per metric for a whole page of projects.
+// Per-project queries fill the connection pool queue on large lists.
+const loadProjectListStats = async (projectIds) => {
+  const progressById = new Map();
+  const usersById = new Map();
+  if (!projectIds.length) {
+    return { progressById, usersById };
+  }
+
+  const placeholders = projectIds.map(() => '?').join(',');
+  const [progressRows, userRows] = await Promise.all([
+    db.query(
+      `SELECT project_id, COUNT(*) AS total_tasks, AVG(progress) AS avg_progress
+       FROM tasks
+       WHERE project_id IN (${placeholders})
+       GROUP BY project_id`,
+      projectIds
+    ),
+    db.query(
+      `SELECT t.project_id, COUNT(DISTINCT ta.assignee_id) AS unique_users
+       FROM task_assignees ta
+       JOIN tasks t ON ta.task_id = t.id
+       WHERE t.project_id IN (${placeholders})
+       GROUP BY t.project_id`,
+      projectIds
+    ),
+  ]);
+
+  for (const row of progressRows) {
+    const progress = Number(row.total_tasks) > 0 ? Math.round(Number(row.avg_progress) || 0) : 0;
+    progressById.set(Number(row.project_id), progress);
+  }
+  for (const row of userRows) {
+    usersById.set(Number(row.project_id), Number(row.unique_users) || 0);
+  }
+  return { progressById, usersById };
+};
+
 // Team employees only see projects they belong to or have assigned tasks on
 const TEAM_ASSIGNED_PROJECTS_FILTER = `
   AND p.id IN (
@@ -157,17 +195,11 @@ const getProjects = async (req, res) => {
     // Execute query with filters
     const rows = await db.query(query, queryParams);
     
-    // Calculate progress and user count for each project
-    const projectsWithDetails = await Promise.all(rows.map(async (project) => {
-      const [calculatedProgress, userCount] = await Promise.all([
-        calculateProjectProgress(project.id),
-        calculateProjectUserCount(project.id)
-      ]);
-      return {
-        ...project,
-        progress: calculatedProgress,
-        userCount: userCount
-      };
+    const { progressById, usersById } = await loadProjectListStats(rows.map((project) => project.id));
+    const projectsWithDetails = rows.map((project) => ({
+      ...project,
+      progress: progressById.get(Number(project.id)) ?? 0,
+      userCount: usersById.get(Number(project.id)) ?? 0
     }));
 
     // Get total count for pagination (with same filters)

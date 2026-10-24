@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, CheckCircle2, CheckSquare, Circle, MessageSquare, PauseCircle, PlayCircle, Trash2, UserCheck, Edit3 } from 'lucide-react';
+import { CalendarDays, CheckCircle2, CheckSquare, Circle, Clock, MessageSquare, PauseCircle, PlayCircle, Trash2, UserCheck, Edit3 } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { useToast } from './ui/Toast';
@@ -68,6 +68,36 @@ function isActiveMember(member: TeamMemberOption): boolean {
   return member.is_active === undefined || member.is_active === true || member.is_active === 1;
 }
 
+function taskDueKey(task: any): string | null {
+  const raw = task?.end_date ?? task?.due_date ?? null;
+  if (raw == null || String(raw).trim() === '') return null;
+  const text = String(raw).trim();
+  const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1];
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDueLabel(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  if (!year || !month || !day) return isoDate;
+  return new Date(year, month - 1, day).toLocaleDateString();
+}
+
+function dayAfter(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  date.setDate(date.getDate() + 1);
+  const nextYear = date.getFullYear();
+  const nextMonth = String(date.getMonth() + 1).padStart(2, '0');
+  const nextDay = String(date.getDate()).padStart(2, '0');
+  return `${nextYear}-${nextMonth}-${nextDay}`;
+}
+
 export function BulkTaskSelectionActions({
   selectedTaskIds,
   selectedTaskNames,
@@ -83,6 +113,9 @@ export function BulkTaskSelectionActions({
   const [isReassignOpen, setIsReassignOpen] = useState(false);
   const [isDatesOpen, setIsDatesOpen] = useState(false);
   const [isRemarkOpen, setIsRemarkOpen] = useState(false);
+  const [isExtensionOpen, setIsExtensionOpen] = useState(false);
+  const [extensionDate, setExtensionDate] = useState('');
+  const [extensionReason, setExtensionReason] = useState('');
   const [isEditNamesOpen, setIsEditNamesOpen] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
@@ -109,6 +142,29 @@ export function BulkTaskSelectionActions({
     (member) => String(member.id) === selectedAssigneeId
   );
 
+  const sharedDueDate = useMemo(() => {
+    if (!assigneeMode || selectedTasks.length === 0) {
+      return { ok: false, date: null as string | null, message: 'Select tasks to request an extension.' };
+    }
+    const keys = selectedTasks.map(taskDueKey);
+    if (keys.some((key) => !key)) {
+      return {
+        ok: false,
+        date: null as string | null,
+        message: 'Every selected task needs a due date before you can request a bulk extension.',
+      };
+    }
+    const unique = new Set(keys);
+    if (unique.size !== 1) {
+      return {
+        ok: false,
+        date: null as string | null,
+        message: 'Bulk extension is available when every selected task has the same due date.',
+      };
+    }
+    return { ok: true, date: keys[0] as string, message: '' };
+  }, [assigneeMode, selectedTasks]);
+
   const closeStatusModal = () => {
     if (!busy) setPendingStatus(null);
   };
@@ -129,6 +185,79 @@ export function BulkTaskSelectionActions({
     setIsDatesOpen(false);
     setStartDate('');
     setDueDate('');
+  };
+
+  const closeExtensionModal = () => {
+    if (busy) return;
+    setIsExtensionOpen(false);
+    setExtensionDate('');
+    setExtensionReason('');
+  };
+
+  const openExtensionModal = () => {
+    if (!sharedDueDate.ok || !sharedDueDate.date) {
+      showToast(sharedDueDate.message, 'error');
+      return;
+    }
+    setExtensionDate('');
+    setExtensionReason('');
+    setIsExtensionOpen(true);
+  };
+
+  const handleConfirmExtension = async () => {
+    if (!sharedDueDate.ok || !sharedDueDate.date || count === 0 || busy) return;
+    if (!extensionDate.trim()) {
+      showToast('Select the new due date for these tasks.', 'error');
+      return;
+    }
+    if (extensionDate <= sharedDueDate.date) {
+      showToast('The new due date must be after the current due date.', 'error');
+      return;
+    }
+    const reason = extensionReason.trim();
+    if (!reason) {
+      showToast('Add a reason for the extension.', 'error');
+      return;
+    }
+    if (reason.length > 1000) {
+      showToast('Reason must be 1000 characters or fewer.', 'error');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(
+        taskIds.map((taskId) => taskService.requestExtension(taskId, {
+          requested_due_date: extensionDate,
+          reason,
+        }))
+      );
+      const failed = results.filter((result) => result.status === 'rejected');
+      const submitted = results.length - failed.length;
+      if (submitted === 0) {
+        const firstReason = failed[0]?.status === 'rejected' ? failed[0].reason : null;
+        const message = firstReason instanceof Error
+          ? firstReason.message
+          : 'Failed to submit extension requests';
+        showToast(message, 'error');
+        return;
+      }
+      const failNote = failed.length > 0
+        ? ` ${failed.length} could not be submitted (a pending request may already exist).`
+        : '';
+      showToast(
+        `Extension requested for ${submitted} task${submitted !== 1 ? 's' : ''} to ${formatDueLabel(extensionDate)}.${failNote}`,
+        failed.length > 0 ? 'info' : 'success'
+      );
+      setIsExtensionOpen(false);
+      setExtensionDate('');
+      setExtensionReason('');
+      await onSuccess();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to submit extension requests', 'error');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleConfirmStatus = async () => {
@@ -312,6 +441,19 @@ export function BulkTaskSelectionActions({
               Dates
             </Button>
           </>
+        )}
+        {assigneeMode && (
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={busy}
+            title={sharedDueDate.ok ? 'Request one new due date for every selected task' : sharedDueDate.message}
+            onClick={openExtensionModal}
+            className={`${COMPACT_BTN} border-amber-300 text-amber-800 hover:bg-amber-50`}
+          >
+            <Clock className="w-3.5 h-3.5 mr-1" />
+            Bulk Extension
+          </Button>
         )}
         <Button
           variant="outline"
@@ -568,6 +710,79 @@ export function BulkTaskSelectionActions({
               disabled={!startDate && !dueDate}
             >
               Update Dates
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isExtensionOpen}
+        onClose={closeExtensionModal}
+        title="Bulk Extension"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Request one new due date for {count} selected task{count !== 1 ? 's' : ''}.
+            {sharedDueDate.date
+              ? ` They all currently fall due on ${formatDueLabel(sharedDueDate.date)}.`
+              : ''}
+            {' '}The same date and reason are sent for every task.
+          </p>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              New due date
+            </label>
+            <input
+              type="date"
+              value={extensionDate}
+              min={sharedDueDate.date ? dayAfter(sharedDueDate.date) : undefined}
+              onChange={(e) => setExtensionDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Reason
+            </label>
+            <textarea
+              value={extensionReason}
+              onChange={(e) => setExtensionReason(e.target.value)}
+              rows={4}
+              maxLength={1000}
+              placeholder="Why these tasks need more time"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+            />
+          </div>
+
+          {selectedTaskNames.length > 0 && (
+            <div className="bg-gray-50 p-3 rounded-lg">
+              <h4 className="text-sm font-medium text-gray-700 mb-2">Selected tasks</h4>
+              <div className="max-h-32 overflow-y-auto space-y-1">
+                {selectedTaskNames.map((name, index) => (
+                  <div key={`${name}-${index}`} className="text-sm text-gray-600 flex items-center">
+                    <span className="w-2 h-2 bg-amber-400 rounded-full mr-2 flex-shrink-0" />
+                    <span className="truncate">{name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end space-x-3 pt-2">
+            <Button type="button" variant="outline" onClick={closeExtensionModal} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleConfirmExtension()}
+              loading={busy}
+              disabled={!extensionDate || !extensionReason.trim()}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              Request Extension
             </Button>
           </div>
         </div>

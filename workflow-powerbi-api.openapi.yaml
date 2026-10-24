@@ -1,0 +1,261 @@
+openapi: 3.0.3
+info:
+  title: Workflow Power BI Read API
+  version: 1.0.0
+  description: >
+    Read-only project data for Power BI Desktop. Authenticate with the
+    X-API-Key header. The PDF route /taskhistory is served as /task-history.
+servers:
+  - url: /api/v1
+paths:
+  /openapi.yaml:
+    get:
+      summary: This document
+      responses:
+        '200':
+          description: OpenAPI YAML
+  /projects/{project_id}/tasks:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/page_size'
+        - $ref: '#/components/parameters/updated_since'
+        - $ref: '#/components/parameters/fields'
+        - $ref: '#/components/parameters/format'
+        - name: status
+          in: query
+          schema: { type: string }
+          description: Comma-separated statuses
+        - name: stage
+          in: query
+          schema: { type: string }
+        - name: assignee_id
+          in: query
+          schema: { type: string }
+          description: Numeric id or u_<id>
+        - name: due_from
+          in: query
+          schema: { type: string, format: date }
+        - name: due_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Task page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskPage' }
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /projects/{project_id}/remarks:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/page_size'
+        - $ref: '#/components/parameters/updated_since'
+        - $ref: '#/components/parameters/fields'
+        - $ref: '#/components/parameters/format'
+        - name: assignee_id
+          in: query
+          schema: { type: string }
+        - name: include_private
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Remark page
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /projects/{project_id}/assignees:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/fields'
+        - $ref: '#/components/parameters/format'
+      responses:
+        '200': { description: Assignees, one row per person }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{project_id}/hierarchy:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/page_size'
+        - $ref: '#/components/parameters/updated_since'
+        - $ref: '#/components/parameters/fields'
+        - $ref: '#/components/parameters/format'
+        - name: tag_level
+          in: query
+          schema: { type: string, enum: [grade, book, unit, lesson] }
+      responses:
+        '200': { description: Curriculum nodes }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{project_id}/task-history:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/page_size'
+        - $ref: '#/components/parameters/updated_since'
+        - $ref: '#/components/parameters/fields'
+        - $ref: '#/components/parameters/format'
+      responses:
+        '200':
+          description: Change events. Empty data when no audit rows exist.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{project_id}/stages:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+      responses:
+        '200': { description: Stages ordered by stage_order }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{project_id}/meta:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+      responses:
+        '200': { description: Refresh check record inside the list envelope }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  parameters:
+    project_id:
+      name: project_id
+      in: path
+      required: true
+      schema: { type: integer }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    page_size:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 5000, default: 1000 }
+    updated_since:
+      name: updated_since
+      in: query
+      schema: { type: string, format: date-time }
+    fields:
+      name: fields
+      in: query
+      schema: { type: string }
+    format:
+      name: format
+      in: query
+      schema: { type: string, enum: [json, csv], default: json }
+  responses:
+    BadRequest:
+      description: Invalid parameter
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorField' }
+    Unauthorized:
+      description: Missing, unknown, revoked, or expired key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Key is not scoped to the project, or include_private without read_admin
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Project does not exist
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: More than 60 requests in the current minute
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    ErrorField:
+      type: object
+      required: [error, field]
+      properties:
+        error: { type: string, example: invalid_parameter }
+        field: { type: string, example: page_size }
+    PageMeta:
+      type: object
+      required: [project_id, generated_at, page, page_size, total_rows, total_pages, next_page]
+      properties:
+        project_id: { type: integer }
+        generated_at: { type: string, format: date-time }
+        page: { type: integer }
+        page_size: { type: integer }
+        total_rows: { type: integer }
+        total_pages: { type: integer }
+        next_page: { type: integer, nullable: true }
+    Task:
+      type: object
+      properties:
+        task_id: { type: integer }
+        task_name: { type: string }
+        project_id: { type: integer }
+        project_name: { type: string }
+        stage: { type: string, nullable: true }
+        status: { type: string }
+        priority: { type: string, nullable: true, enum: [low, medium, high, critical] }
+        progress_pct: { type: integer }
+        assignee_id: { type: string, nullable: true }
+        assignee_name: { type: string, nullable: true }
+        assignee_email: { type: string, nullable: true }
+        hierarchy_node_id: { type: string, nullable: true }
+        hierarchy_path: { type: string, nullable: true }
+        start_date: { type: string, format: date, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+        is_completed: { type: boolean }
+        is_overdue: { type: boolean }
+        delay_days: { type: integer }
+        estimated_hours: { type: number }
+        actual_hours: { type: number }
+        remaining_hours: { type: number }
+        remark_count: { type: integer }
+        updated_at: { type: string, format: date-time, nullable: true }
+        is_deleted: { type: boolean }
+    TaskPage:
+      type: object
+      required: [meta, data]
+      properties:
+        meta: { $ref: '#/components/schemas/PageMeta' }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+security:
+  - ApiKey: []

@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const reworkService = require('../services/taskReworkService');
 const { getAccessibleTeamMemberIds, getTaskListScope } = require('../utils/accessPermissions');
+const { activeTaskSql } = require('../utils/schemaColumns');
 
 // Team member authentication
 const authenticateTeamMember = async (req, res) => {
@@ -96,6 +97,7 @@ const getMyTasks = async (req, res) => {
   try {
     const teamMemberId = req.user.id;
     
+    const deletedSql = await activeTaskSql('t');
     const tasks = await db.query(`
       SELECT 
         t.*,
@@ -126,6 +128,7 @@ const getMyTasks = async (req, res) => {
       LEFT JOIN task_assignees ta ON t.id = ta.task_id
       LEFT JOIN performance_flags pf ON t.id = pf.task_id AND pf.team_member_id = ?
       WHERE ta.assignee_id = ? AND ta.assignee_type = 'team'
+        ${deletedSql ? `AND ${deletedSql}` : ''}
       GROUP BY t.id
       ORDER BY
         CASE

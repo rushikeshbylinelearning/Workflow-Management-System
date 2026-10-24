@@ -16,7 +16,6 @@ import {
   Users,
   BarChart3,
   Calendar,
-  Trophy,
   Home,
   ChevronRight,
   ChevronDown,
@@ -74,7 +73,6 @@ import { TeamManager } from './TeamManager';
 import { Analytics } from './Analytics';
 import { CoreAnalytics } from './CoreAnalytics';
 import { DailyAllocations } from './DailyAllocations';
-import { TopPerformers } from './TopPerformers';
 import { Notification } from './Notification';
 import { Dashboard } from './Dashboard';
 import { TaskManager } from './TaskManager';
@@ -98,7 +96,6 @@ const NAV_ITEMS = [
   { key: 'tasks',          label: 'All Tasks',      icon: CheckSquare,     permission: 'view_tasks',          alwaysVisible: false, pmOnly: false },
   { key: 'teams',          label: 'Teams',          icon: Users,           permission: 'view_team',           alwaysVisible: false, pmOnly: false },
   { key: 'allocations',    label: 'Allocations',    icon: Calendar,        permission: 'view_allocations',    alwaysVisible: false, pmOnly: false },
-  { key: 'top-performers', label: 'Top Performers', icon: Trophy,          permission: 'view_top_performers', alwaysVisible: false, pmOnly: false },
   { key: 'analytics',      label: 'Analytics',      icon: BarChart3,       permission: 'view_analytics',      alwaysVisible: false, pmOnly: false },
   { key: 'core-analytics', label: 'Core Analytics', icon: TrendingUp,      permission: 'view_analytics',      alwaysVisible: false, pmOnly: false },
   { key: 'notifications',  label: 'Manage Extensions', icon: Bell,            permission: 'view_notifications',  alwaysVisible: false, pmOnly: false },
@@ -598,7 +595,6 @@ export function TeamMemberPortal({ user, onLogout }: TeamMemberPortalProps) {
             }}
           />
         );
-      case 'top-performers':  return <TopPerformers />;
       case 'analytics':       return <Analytics />;
       case 'core-analytics':  return <CoreAnalytics />;
       case 'notifications':   return <Notification />;

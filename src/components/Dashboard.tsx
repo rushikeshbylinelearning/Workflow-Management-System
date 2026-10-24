@@ -10,7 +10,6 @@ import {
   Loader2,
   Trophy,
   Star,
-  Flag
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Badge } from './ui/Badge';
@@ -32,6 +31,13 @@ export function Dashboard() {
   const [topPerformers, setTopPerformers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Admin sessions use access_token. A teamToken means the team portal, which must not see rankings.
+  const isAdmin =
+    !!user &&
+    typeof window !== 'undefined' &&
+    !!sessionStorage.getItem('access_token') &&
+    !sessionStorage.getItem('teamToken');
 
   // Check if user is logged in (either admin or team member)
   const isAuthenticated = () => {
@@ -63,10 +69,10 @@ export function Dashboard() {
           }
         }
         
-        const [dashboardDataResult, topPerformersResult] = await Promise.all([
-          dashboardService.getOverview(),
-          teamService.getMembersWithPerformanceRanking()
-        ]);
+        const dashboardDataResult = await dashboardService.getOverview();
+        const topPerformersResult = isAdmin
+          ? await teamService.getMembersWithPerformanceRanking()
+          : [];
         
         if (isMounted) {
           setDashboardData(dashboardDataResult);
@@ -82,10 +88,10 @@ export function Dashboard() {
               const refreshed = await tokenService.refreshActiveToken();
               if (refreshed) {
                 // Retry the API call
-                const [retryDashboardData, retryTopPerformers] = await Promise.all([
-                  dashboardService.getOverview(),
-                  teamService.getMembersWithPerformanceRanking()
-                ]);
+                const retryDashboardData = await dashboardService.getOverview();
+                const retryTopPerformers = isAdmin
+                  ? await teamService.getMembersWithPerformanceRanking()
+                  : [];
                 if (isMounted) {
                   setDashboardData(retryDashboardData);
                   setTopPerformers((retryTopPerformers || []).filter(isActiveMember).slice(0, 5));
@@ -468,7 +474,8 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Top Performers Section */}
+      {/* Top Performers — admin only */}
+      {isAdmin && (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Top Performers */}
         <Card className="rounded-2xl border-0 bg-white/80 backdrop-blur-sm">
@@ -547,6 +554,7 @@ export function Dashboard() {
         </Card>
 
       </div>
+      )}
 
       {/* Quick Actions */}
       <Card className="rounded-2xl border-0 bg-white/80 backdrop-blur-sm">

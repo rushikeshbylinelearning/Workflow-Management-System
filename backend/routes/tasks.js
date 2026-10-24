@@ -532,8 +532,8 @@ router.patch('/bulk-status',
   requireAdminOrPMAuth,
   [
     body('taskIds')
-      .isArray({ min: 1, max: 500 })
-      .withMessage('Task IDs must be a non-empty array of at most 500 items'),
+      .isArray({ min: 1, max: 5000 })
+      .withMessage('Task IDs must be a non-empty array of at most 5000 items'),
     body('taskIds.*')
       .isInt({ min: 1 })
       .withMessage('Each task ID must be a positive integer'),

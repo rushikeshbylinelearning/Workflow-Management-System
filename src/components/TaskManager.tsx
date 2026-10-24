@@ -13,8 +13,10 @@ import {
   RotateCcw,
   LayoutGrid,
   List as ListIcon,
+  Copy,
   type LucideIcon,
 } from 'lucide-react';
+import { copyTextToClipboard } from '../utils/clipboard';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
@@ -1201,6 +1203,21 @@ export function TaskManager() {
     setIsCreateModalOpen(true);
   };
 
+  const handleCopyServerLocation = async (serverLocation: string) => {
+    const location = String(serverLocation || '').trim();
+    if (!location) {
+      showToast('No server location submitted for this task yet.', 'error');
+      return;
+    }
+    try {
+      await copyTextToClipboard(location);
+      showToast('Server location copied to clipboard!', 'success');
+    } catch (error) {
+      console.error('Failed to copy server location:', error);
+      showToast('Failed to copy server location', 'error');
+    }
+  };
+
   const handleSort = (field: string) => {
     if (sortField === field) {
       // Toggle order if same field
@@ -1967,7 +1984,7 @@ export function TaskManager() {
                 <col style={{ width: '11%' }} />
                 <col style={{ width: '9%' }} />
                 <col style={{ width: '9%' }} />
-                <col style={{ width: canManageTasks ? '148px' : '96px' }} />
+                <col style={{ width: canManageTasks ? '176px' : '96px' }} />
               </colgroup>
               <thead className="bg-gray-50">
                 <tr>
@@ -2132,6 +2149,7 @@ export function TaskManager() {
                   const taskTags = formatTaskTags(task);
                   const taskSubtitle = taskTags || task.description;
                   const taskSubtitleTitle = [taskTags, task.description].filter(Boolean).join(' · ');
+                  const serverLocation = String(task.server_location || '').trim();
 
                   return (
                     <tr
@@ -2299,6 +2317,22 @@ export function TaskManager() {
                           >
                             <Eye className="w-4 h-4" />
                           </Button>
+
+                          {canManageTasks && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="task-table__action-btn text-blue-600 hover:text-blue-700 hover:bg-blue-50 disabled:opacity-40 disabled:hover:bg-transparent"
+                              disabled={!serverLocation}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleCopyServerLocation(serverLocation);
+                              }}
+                              title={serverLocation ? `Copy server location: ${serverLocation}` : 'No server location submitted yet'}
+                            >
+                              <Copy className="w-4 h-4" />
+                            </Button>
+                          )}
                           
                           {canManageTasks && task.status === 'under-review' ? (
                             <>

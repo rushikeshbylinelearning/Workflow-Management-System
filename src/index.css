@@ -135,8 +135,8 @@ body {
 }
 
 .task-table__progress-cell--admin {
-  width: 148px;
-  max-width: 148px;
+  width: 176px;
+  max-width: 176px;
 }
 
 .task-table__progress-inner {
@@ -144,7 +144,7 @@ body {
 }
 
 .task-table__progress-inner--admin {
-  width: 132px;
+  width: 160px;
 }
 
 .task-table__progress-bar-row {
@@ -179,8 +179,8 @@ body {
 
 .task-table__action-buttons--admin {
   display: grid;
-  grid-template-columns: repeat(5, 1.75rem);
-  width: 8.75rem;
+  grid-template-columns: repeat(6, 1.75rem);
+  width: 10.5rem;
 }
 
 .task-table__action-buttons .task-table__action-btn {

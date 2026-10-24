@@ -64,7 +64,7 @@ app.use((req, res, next) => {
   // and Access-Control-Allow-Origin: * (causes "Failed to fetch" errors).
 
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-API-Key');
   res.header('Access-Control-Allow-Credentials', 'true');
   
   // CRITICAL: Disable caching for ALL API responses
@@ -182,6 +182,11 @@ app.use('/api/dashboard', dashboardRoutes);
 
 const apiKeyRoutes = require('./routes/apiKeys');
 app.use('/api/api-keys', apiKeyRoutes);
+
+const powerbiRoutes = require('./powerbi-api/router');
+app.use('/api/v1', powerbiRoutes);
+
+app.use('/api/admin/powerbi-keys', require('./routes/powerbiKeyAdmin'));
 
 app.use('/api/admin', require('./routes/teamsAdmin'));
 

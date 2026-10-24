@@ -1,5 +1,6 @@
 const db = require('../db');
 const { getTaskScopeCondition, getAccessibleTeamMemberIds } = require('../utils/accessPermissions');
+const { activeTaskSql } = require('../utils/schemaColumns');
 
 // Helper: format seconds to "Xh Ym"
 const formatDuration = (seconds) => {
@@ -42,6 +43,10 @@ const getSummary = async (req, res) => {
     `);
 
     // Tasks overview
+    const deletedSql = await activeTaskSql('t');
+    const taskFilter = deletedSql
+      ? (taskWhere ? taskWhere.replace('WHERE', `WHERE ${deletedSql} AND`) : `WHERE ${deletedSql}`)
+      : taskWhere;
     const taskStats = await db.queryFirst(`
       SELECT
         COUNT(*) AS total,
@@ -54,7 +59,7 @@ const getSummary = async (req, res) => {
         SUM(end_date < CURDATE() AND status NOT IN ('completed','skipped','under-review')) AS overdue,
         ROUND(AVG(progress), 1) AS avg_progress
       FROM tasks t
-      ${taskWhere}
+      ${taskFilter}
     `, scopeCondition.params);
 
     // Count tasks with no assignees (LEFT JOIN + NULL check)

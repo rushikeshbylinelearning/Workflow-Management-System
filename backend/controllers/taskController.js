@@ -1581,6 +1581,9 @@ const getBulkRemarkDefaults = async (req, res) => {
       latestFileByTask[row.task_id] = row.file_name;
     }
 
+    // Assignees submit a new location/name with each remark — do not pre-fill prior paths.
+    const prefillFiles = canManageTasks(req.user);
+
     const byId = {};
     for (const task of tasks) {
       const latest = latestByTask[task.id] || {};
@@ -1597,8 +1600,8 @@ const getBulkRemarkDefaults = async (req, res) => {
         status: task.status,
         stage: task.status,
         stage_name: task.stage_name || '',
-        fileLocation: task.server_location || latest.server_location || '',
-        fileName: latestFileByTask[task.id] || '',
+        fileLocation: prefillFiles ? (task.server_location || latest.server_location || '') : '',
+        fileName: prefillFiles ? (latestFileByTask[task.id] || '') : '',
       };
     }
 
