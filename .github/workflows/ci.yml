@@ -72,9 +72,12 @@ jobs:
     timeout-minutes: 20
     environment:
       name: production
-      url: ${{ vars.APP_URL }}
+      url: ${{ secrets.APP_URL || vars.APP_URL }}
     env:
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      # Prefer Environment secrets (what you added); Variables also work
+      APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
+      API_URL: ${{ secrets.API_URL || vars.API_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,8 +94,8 @@ jobs:
       - name: Build frontend for production (A2)
         run: npm run build
         env:
-          VITE_API_URL: ${{ vars.API_URL || 'https://workflow.bylinelms.com/api' }}
-          VITE_SSO_DASHBOARD_URL: ${{ vars.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
+          VITE_API_URL: ${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}
+          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || vars.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
           VITE_ENABLE_RESUBMISSION_DEADLINE: ${{ vars.VITE_ENABLE_RESUBMISSION_DEADLINE || 'true' }}
           VITE_ENABLE_REWORK_HIGHLIGHT: ${{ vars.VITE_ENABLE_REWORK_HIGHLIGHT || 'true' }}
 
@@ -102,8 +105,8 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          APP_URL: ${{ vars.APP_URL }}
-          API_URL: ${{ vars.API_URL }}
+          APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
+          API_URL: ${{ secrets.API_URL || vars.API_URL }}
         run: |
           missing=0
           for name in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH APP_URL API_URL; do
@@ -177,7 +180,7 @@ jobs:
 
       - name: Health check
         run: |
-          API_URL="${{ vars.API_URL || 'https://workflow.bylinelms.com/api' }}"
+          API_URL="${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}"
           echo "Checking ${API_URL}/health"
           curl -fsS "${API_URL}/health"
           echo
