@@ -104,29 +104,26 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_KEY: ${{ secrets.SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_URL: ${{ secrets.APP_URL }}
           API_URL: ${{ secrets.API_URL }}
         run: |
           missing=0
-          for name in SSH_HOST SSH_USER DEPLOY_PATH APP_URL API_URL; do
+          for name in SSH_HOST SSH_USER SSH_KEY_B64 DEPLOY_PATH APP_URL API_URL; do
             eval "value=\${$name}"
             if [ -z "$value" ]; then
-              echo "::error::$name is not set on the production GitHub Environment"
+              echo "::error::$name is not set on the production GitHub Environment (Settings → Environments → production → Environment secrets). Name must match exactly."
               missing=1
             fi
           done
-          if [ -z "$SSH_KEY" ] && [ -z "$SSH_KEY_B64" ]; then
-            echo "::error::Set SSH_KEY_B64 (recommended) or SSH_KEY on the production Environment"
-            missing=1
+          if [ -n "$SSH_KEY_B64" ]; then
+            echo "SSH_KEY_B64 is set (length=${#SSH_KEY_B64})"
           fi
           exit $missing
 
       - name: Setup SSH
         env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -135,33 +132,38 @@ jobs:
           chmod 700 ~/.ssh
           KEY_FILE="$HOME/.ssh/deploy_key"
 
-          # Prefer base64 secret — avoids GitHub multiline paste corruption (libcrypto)
-          if [ -n "$SSH_KEY_B64" ]; then
-            echo "$SSH_KEY_B64" | tr -d ' \n\r\t' | base64 -d > "$KEY_FILE"
-          else
-            printenv SSH_KEY | tr -d '\r' > "$KEY_FILE"
-            if ! ssh-keygen -y -f "$KEY_FILE" >/dev/null 2>&1; then
-              printenv SSH_KEY | tr -d '\r' | sed 's/\\n/\n/g' > "$KEY_FILE"
-            fi
-          fi
-
-          # OpenSSH requires a trailing newline
-          if [ -s "$KEY_FILE" ] && [ -n "$(tail -c1 "$KEY_FILE")" ]; then
-            echo >> "$KEY_FILE"
-          fi
+          echo "Decoding SSH_KEY_B64 (length=${#SSH_KEY_B64})…"
+          # python decode is more reliable than shell base64 for long secrets
+          python3 - <<'PY'
+          import os, base64, pathlib, sys
+          raw = os.environ.get("SSH_KEY_B64", "")
+          cleaned = "".join(raw.split())
+          try:
+              data = base64.b64decode(cleaned, validate=False)
+          except Exception as e:
+              print(f"::error::base64 decode failed: {e}")
+              sys.exit(1)
+          path = pathlib.Path.home() / ".ssh" / "deploy_key"
+          if not data.endswith(b"\n"):
+              data += b"\n"
+          path.write_bytes(data)
+          text = data.decode("utf-8", errors="replace")
+          first = text.splitlines()[0] if text.splitlines() else ""
+          last = text.splitlines()[-1] if text.splitlines() else ""
+          print(f"key bytes={len(data)} first_line={first!r} last_line={last!r}")
+          if "BEGIN" not in first or "PRIVATE KEY" not in first:
+              print("::error::Decoded content is not a private key. Did you paste into SSH_KEY_B64 under Environment production?")
+              sys.exit(1)
+          PY
           chmod 600 "$KEY_FILE"
 
-          if ! grep -q "BEGIN .*PRIVATE KEY" "$KEY_FILE"; then
-            echo "::error::Key must be a PRIVATE key (-----BEGIN ... PRIVATE KEY-----), not .pub"
-            exit 1
-          fi
-
           if ! ssh-keygen -y -f "$KEY_FILE" >/dev/null 2>&1; then
-            echo "::error::Private key is still invalid (libcrypto). Create secret SSH_KEY_B64: on A2 run  base64 -w0 ~/.ssh/Workflow  and paste that single line."
+            echo "::error::Decoded key failed ssh-keygen (libcrypto). Re-create SSH_KEY_B64 from A2: base64 -w0 ~/.ssh/Workflow"
+            ssh-keygen -y -f "$KEY_FILE" || true
             exit 1
           fi
 
-          echo "SSH key OK (fingerprint follows)"
+          echo "SSH key OK"
           ssh-keygen -lf "$KEY_FILE" || true
 
           PORT="${SSH_PORT:-22}"
