@@ -70,14 +70,15 @@ jobs:
     needs: [frontend, backend]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # environment.url cannot reference secrets (GitHub rejects the workflow file)
     environment:
       name: production
-      url: ${{ secrets.APP_URL || vars.APP_URL }}
+      url: https://workflow.bylinelms.com
     env:
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-      # Prefer Environment secrets (what you added); Variables also work
-      APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
-      API_URL: ${{ secrets.API_URL || vars.API_URL }}
+      # Your APP_URL / API_URL are Environment secrets (not Variables)
+      APP_URL: ${{ secrets.APP_URL }}
+      API_URL: ${{ secrets.API_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,10 +95,10 @@ jobs:
       - name: Build frontend for production (A2)
         run: npm run build
         env:
-          VITE_API_URL: ${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}
-          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || vars.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
-          VITE_ENABLE_RESUBMISSION_DEADLINE: ${{ vars.VITE_ENABLE_RESUBMISSION_DEADLINE || 'true' }}
-          VITE_ENABLE_REWORK_HIGHLIGHT: ${{ vars.VITE_ENABLE_REWORK_HIGHLIGHT || 'true' }}
+          VITE_API_URL: ${{ secrets.API_URL }}
+          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
+          VITE_ENABLE_RESUBMISSION_DEADLINE: "true"
+          VITE_ENABLE_REWORK_HIGHLIGHT: "true"
 
       - name: Require production secrets
         env:
@@ -105,8 +106,8 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
-          API_URL: ${{ secrets.API_URL || vars.API_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          API_URL: ${{ secrets.API_URL }}
         run: |
           missing=0
           for name in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH APP_URL API_URL; do
@@ -179,8 +180,9 @@ jobs:
              bash '${DEPLOY_PATH}/backend/remote-after-deploy.sh' '${DEPLOY_PATH}'"
 
       - name: Health check
+        env:
+          API_URL: ${{ secrets.API_URL }}
         run: |
-          API_URL="${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}"
           echo "Checking ${API_URL}/health"
           curl -fsS "${API_URL}/health"
           echo
