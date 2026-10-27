@@ -105,30 +105,65 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_URL: ${{ secrets.APP_URL }}
           API_URL: ${{ secrets.API_URL }}
         run: |
           missing=0
-          for name in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH APP_URL API_URL; do
+          for name in SSH_HOST SSH_USER DEPLOY_PATH APP_URL API_URL; do
             eval "value=\${$name}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set on the production GitHub Environment"
               missing=1
             fi
           done
+          if [ -z "$SSH_KEY" ] && [ -z "$SSH_KEY_B64" ]; then
+            echo "::error::Set SSH_KEY_B64 (recommended) or SSH_KEY on the production Environment"
+            missing=1
+          fi
           exit $missing
 
       - name: Setup SSH
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          KEY_FILE="$HOME/.ssh/deploy_key"
+
+          # Prefer base64 secret — avoids GitHub multiline paste corruption (libcrypto)
+          if [ -n "$SSH_KEY_B64" ]; then
+            echo "$SSH_KEY_B64" | tr -d ' \n\r\t' | base64 -d > "$KEY_FILE"
+          else
+            printenv SSH_KEY | tr -d '\r' > "$KEY_FILE"
+            if ! ssh-keygen -y -f "$KEY_FILE" >/dev/null 2>&1; then
+              printenv SSH_KEY | tr -d '\r' | sed 's/\\n/\n/g' > "$KEY_FILE"
+            fi
+          fi
+
+          # OpenSSH requires a trailing newline
+          if [ -s "$KEY_FILE" ] && [ -n "$(tail -c1 "$KEY_FILE")" ]; then
+            echo >> "$KEY_FILE"
+          fi
+          chmod 600 "$KEY_FILE"
+
+          if ! grep -q "BEGIN .*PRIVATE KEY" "$KEY_FILE"; then
+            echo "::error::Key must be a PRIVATE key (-----BEGIN ... PRIVATE KEY-----), not .pub"
+            exit 1
+          fi
+
+          if ! ssh-keygen -y -f "$KEY_FILE" >/dev/null 2>&1; then
+            echo "::error::Private key is still invalid (libcrypto). Create secret SSH_KEY_B64: on A2 run  base64 -w0 ~/.ssh/Workflow  and paste that single line."
+            exit 1
+          fi
+
+          echo "SSH key OK (fingerprint follows)"
+          ssh-keygen -lf "$KEY_FILE" || true
+
           PORT="${SSH_PORT:-22}"
           ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           echo "SSH_PORT=$PORT" >> "$GITHUB_ENV"
