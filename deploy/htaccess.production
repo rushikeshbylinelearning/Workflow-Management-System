@@ -37,9 +37,9 @@ RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
   RewriteEngine On
   RewriteBase /
 
-  # Proxy API requests to the live Node.js backend
+  # Proxy API requests to the local Node.js / PM2 backend on A2
   RewriteCond %{REQUEST_URI} ^/api/
-  RewriteRule ^api/(.*)$ https://workflow.legatolxp.online/api/$1 [P,L,QSA]
+  RewriteRule ^api/(.*)$ http://127.0.0.1:3005/api/$1 [P,L,QSA]
 
   ErrorDocument 502 "API Backend Unavailable - Please ensure Node.js server is running on port 3005"
   ErrorDocument 503 "API Backend Unavailable - Please ensure Node.js server is running on port 3005"

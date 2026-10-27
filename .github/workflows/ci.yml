@@ -70,14 +70,15 @@ jobs:
     needs: [frontend, backend]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # environment.url cannot reference secrets (GitHub rejects the workflow file)
     environment:
       name: production
-      url: ${{ secrets.APP_URL || vars.APP_URL }}
+      url: https://workflow.bylinelms.com
     env:
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-      # Prefer Environment secrets (what you added); Variables also work
-      APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
-      API_URL: ${{ secrets.API_URL || vars.API_URL }}
+      # Your APP_URL / API_URL are Environment secrets (not Variables)
+      APP_URL: ${{ secrets.APP_URL }}
+      API_URL: ${{ secrets.API_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,40 +95,77 @@ jobs:
       - name: Build frontend for production (A2)
         run: npm run build
         env:
-          VITE_API_URL: ${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}
-          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || vars.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
-          VITE_ENABLE_RESUBMISSION_DEADLINE: ${{ vars.VITE_ENABLE_RESUBMISSION_DEADLINE || 'true' }}
-          VITE_ENABLE_REWORK_HIGHLIGHT: ${{ vars.VITE_ENABLE_REWORK_HIGHLIGHT || 'true' }}
+          VITE_API_URL: ${{ secrets.API_URL }}
+          VITE_SSO_DASHBOARD_URL: ${{ secrets.SSO_DASHBOARD_URL || 'https://sso.bylinelms.com/dashboard' }}
+          VITE_ENABLE_RESUBMISSION_DEADLINE: "true"
+          VITE_ENABLE_REWORK_HIGHLIGHT: "true"
 
       - name: Require production secrets
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          APP_URL: ${{ secrets.APP_URL || vars.APP_URL }}
-          API_URL: ${{ secrets.API_URL || vars.API_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          API_URL: ${{ secrets.API_URL }}
         run: |
           missing=0
-          for name in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH APP_URL API_URL; do
+          for name in SSH_HOST SSH_USER SSH_KEY_B64 DEPLOY_PATH APP_URL API_URL; do
             eval "value=\${$name}"
             if [ -z "$value" ]; then
-              echo "::error::$name is not set on the production GitHub Environment"
+              echo "::error::$name is not set on the production GitHub Environment (Settings → Environments → production → Environment secrets). Name must match exactly."
               missing=1
             fi
           done
+          if [ -n "$SSH_KEY_B64" ]; then
+            echo "SSH_KEY_B64 is set (length=${#SSH_KEY_B64})"
+          fi
           exit $missing
 
       - name: Setup SSH
         env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          KEY_FILE="$HOME/.ssh/deploy_key"
+
+          echo "Decoding SSH_KEY_B64 (length=${#SSH_KEY_B64})…"
+          # python decode is more reliable than shell base64 for long secrets
+          python3 - <<'PY'
+          import os, base64, pathlib, sys
+          raw = os.environ.get("SSH_KEY_B64", "")
+          cleaned = "".join(raw.split())
+          try:
+              data = base64.b64decode(cleaned, validate=False)
+          except Exception as e:
+              print(f"::error::base64 decode failed: {e}")
+              sys.exit(1)
+          path = pathlib.Path.home() / ".ssh" / "deploy_key"
+          if not data.endswith(b"\n"):
+              data += b"\n"
+          path.write_bytes(data)
+          text = data.decode("utf-8", errors="replace")
+          first = text.splitlines()[0] if text.splitlines() else ""
+          last = text.splitlines()[-1] if text.splitlines() else ""
+          print(f"key bytes={len(data)} first_line={first!r} last_line={last!r}")
+          if "BEGIN" not in first or "PRIVATE KEY" not in first:
+              print("::error::Decoded content is not a private key. Did you paste into SSH_KEY_B64 under Environment production?")
+              sys.exit(1)
+          PY
+          chmod 600 "$KEY_FILE"
+
+          if ! ssh-keygen -y -f "$KEY_FILE" >/dev/null 2>&1; then
+            echo "::error::Decoded key failed ssh-keygen (libcrypto). Re-create SSH_KEY_B64 from A2: base64 -w0 ~/.ssh/Workflow"
+            ssh-keygen -y -f "$KEY_FILE" || true
+            exit 1
+          fi
+
+          echo "SSH key OK"
+          ssh-keygen -lf "$KEY_FILE" || true
+
           PORT="${SSH_PORT:-22}"
           ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           echo "SSH_PORT=$PORT" >> "$GITHUB_ENV"
@@ -179,9 +217,21 @@ jobs:
              bash '${DEPLOY_PATH}/backend/remote-after-deploy.sh' '${DEPLOY_PATH}'"
 
       - name: Health check
+        env:
+          API_URL: ${{ secrets.API_URL }}
         run: |
-          API_URL="${{ secrets.API_URL || vars.API_URL || 'https://workflow.bylinelms.com/api' }}"
-          echo "Checking ${API_URL}/health"
-          curl -fsS "${API_URL}/health"
-          echo
-          echo "Production (A2) health check passed"
+          # API_URL should be https://workflow.bylinelms.com/api
+          HEALTH_URL="${API_URL%/}/health"
+          echo "Checking ${HEALTH_URL}"
+          for i in 1 2 3 4 5 6; do
+            if body="$(curl -fsS "$HEALTH_URL")"; then
+              echo "$body"
+              echo "Production (A2) health check passed"
+              exit 0
+            fi
+            echo "Attempt $i failed; waiting for PM2/Apache…"
+            sleep 5
+          done
+          echo "::error::Health check failed. On A2 run: pm2 list && pm2 logs workflow-backend --lines 50 && curl -i http://127.0.0.1:3005/api/health"
+          curl -sS -i "$HEALTH_URL" || true
+          exit 1
